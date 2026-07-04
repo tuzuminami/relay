@@ -1,5 +1,27 @@
-# Local-only implementation guidance
-CODEX_AI_COMPANION_OSS_IMPLEMENTATION_HARNESS.md
+# Private AI operator material
+/.private/
+/.codex-private/
+/private-ai-control-plane/
+/CODEX_AI_COMPANION_OSS_IMPLEMENTATION_HARNESS.md
+/CODEX_IMPLEMENTATION_HARNESS.md
+/AGENTS.private.md
+/AGENTS_PRIVATE.md
+/README_PRIVATE.md
+
+# Accidental in-repo copies of private planning material
+/docs/00_GLOSSARY.md
+/docs/01_BMA.md
+/docs/02_StRS.md
+/docs/03_SyRS.md
+/docs/04_AD.md
+/docs/05_DD.md
+/docs/06_API_CONTRACT.md
+/docs/07_VV_PLAN.md
+/docs/08_TRACEABILITY.md
+/docs/09_MVP_BACKLOG.md
+/docs/10_RELEASE_CRITERIA.md
+/docs/ai/
+/docs/private/
 
 # Dependencies and build output
 node_modules/
@@ -14,3 +36,4 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.serena/
