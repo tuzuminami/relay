@@ -1,0 +1,89 @@
+openapi: 3.1.0
+info:
+  title: RELAY API
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: Service health.
+  /ready:
+    get:
+      responses:
+        "200":
+          description: Service readiness.
+  /v1/routes/resolve:
+    get:
+      parameters:
+        - name: purpose
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: dataClassification
+          in: query
+          required: true
+          schema:
+            enum: [public, internal, confidential, restricted]
+        - name: capability
+          in: query
+          required: true
+          schema:
+            enum: [chat, stream, embeddings, tools, json_mode, vision]
+        - name: maxCostCents
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: A compliant route was found.
+        "403":
+          description: No compliant route is available.
+  /v1/chat/completions:
+    post:
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/chat-completion-request.schema.json
+      responses:
+        "200":
+          description: Normalized chat completion response.
+        "401":
+          description: Authentication is required.
+        "403":
+          description: Tenant or route policy denied the request.
+        "422":
+          description: Validation failed.
+  /v1/usage:
+    get:
+      responses:
+        "200":
+          description: Usage records for the authenticated tenant.
+        "401":
+          description: Authentication is required.
+        "403":
+          description: Tenant scope denied.
+  /v1/providers/validate:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/provider-validation-request.schema.json
+      responses:
+        "200":
+          description: Provider configuration is valid.
+        "422":
+          description: Provider configuration is invalid.

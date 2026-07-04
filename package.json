@@ -1,0 +1,30 @@
+{
+  "name": "@tuzuminami/relay",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.30.2",
+  "files": [
+    "apps",
+    "packages",
+    "db",
+    "scripts",
+    "docs/adr",
+    "docs/runbooks",
+    "README.md",
+    "LICENSE.md",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check:private-boundary": "node scripts/check-private-boundary.mjs",
+    "start:api": "node --experimental-strip-types apps/api/src/main.ts",
+    "test": "node --test --experimental-strip-types tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
