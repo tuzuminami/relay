@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { RelayError, validationFailed } from "./errors.ts";
 import type { AuditLog, Clock, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "./ports.ts";
 import { assertRouteAllowed, resolveRoute } from "./route-policy.ts";
@@ -34,9 +35,17 @@ export class RelayService {
       throw validationFailed(["Idempotency-Key header is required"]);
     }
 
+    const requestHash = hashRequest(request);
     const previous = await this.ports.idempotency.get(ctx.auth.tenantId, idempotencyKey);
     if (previous !== undefined) {
-      return previous;
+      if (previous.requestHash !== requestHash) {
+        throw new RelayError(
+          "IDEMPOTENCY_CONFLICT",
+          "Idempotency key was already used with a different request.",
+          409,
+        );
+      }
+      return previous.response;
     }
 
     const resolution = await this.resolve(ctx, request);
@@ -93,7 +102,7 @@ export class RelayService {
       },
       createdAt: this.ports.clock.now(),
     });
-    await this.ports.idempotency.put(ctx.auth.tenantId, idempotencyKey, response);
+    await this.ports.idempotency.put(ctx.auth.tenantId, idempotencyKey, requestHash, response);
     return response;
   }
 
@@ -152,6 +161,23 @@ export class RelayService {
     }
     return providers;
   }
+}
+
+function hashRequest(request: ChatCompletionRequest): string {
+  return createHash("sha256").update(stableStringify(request)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function assertTenantScope(ctx: RequestContext): void {

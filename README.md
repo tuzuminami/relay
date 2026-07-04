@@ -16,6 +16,7 @@ secret vault, or promise feature parity across providers.
 - Secret references resolved only at the adapter boundary
 - Append-only audit and usage records
 - Idempotency for chat completion writes
+- Bounded timeout handling for OpenAI-compatible provider calls
 - Public private-boundary guard for tracked and staged files
 
 ## Quick Start

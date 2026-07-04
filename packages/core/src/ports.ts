@@ -31,8 +31,8 @@ export interface UsageRepository {
 }
 
 export interface IdempotencyStore {
-  get(tenantId: string, key: string): Promise<ChatCompletionResponse | undefined>;
-  put(tenantId: string, key: string, response: ChatCompletionResponse): Promise<void>;
+  get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined>;
+  put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void>;
 }
 
 export interface Clock {

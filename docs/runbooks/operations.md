@@ -21,6 +21,9 @@ pnpm test
 - Tenant mismatch returns a typed 403 response.
 - No compliant route returns a typed 403 response before provider I/O.
 - Missing secret references return a typed safe failure.
+- Reusing an idempotency key with a different request returns a typed conflict
+  before provider I/O.
+- Provider HTTP timeouts return a typed safe dependency failure.
 
 ## Rollback
 

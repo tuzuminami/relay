@@ -29,7 +29,7 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
   readonly providers: ProviderConfig[];
   readonly auditEvents: AuditEvent[] = [];
   readonly usageRecords: UsageRecord[] = [];
-  private readonly idempotency = new Map<string, ChatCompletionResponse>();
+  private readonly idempotency = new Map<string, { readonly requestHash: string; readonly response: ChatCompletionResponse }>();
 
   constructor(routes: readonly ModelRoute[], providers: readonly ProviderConfig[]) {
     this.routes = [...routes];
@@ -52,12 +52,12 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     this.usageRecords.push(record);
   }
 
-  async get(tenantId: string, key: string): Promise<ChatCompletionResponse | undefined> {
+  async get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
     return this.idempotency.get(`${tenantId}:${key}`);
   }
 
-  async put(tenantId: string, key: string, response: ChatCompletionResponse): Promise<void> {
-    this.idempotency.set(`${tenantId}:${key}`, response);
+  async put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void> {
+    this.idempotency.set(`${tenantId}:${key}`, { requestHash, response });
   }
 }
 

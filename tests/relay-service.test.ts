@@ -91,6 +91,36 @@ test("TEST-IDEMP-001 repeated idempotency key returns original response", async 
   assert.equal(adapter.calls, 1);
 });
 
+test("TEST-IDEMP-002 repeated idempotency key with different request returns conflict before provider I/O", async () => {
+  const { service, adapter, ctx } = fixture();
+  const firstRequest = parseChatCompletionRequest({
+    model: "local-demo",
+    purpose: "chat",
+    dataClassification: "internal",
+    messages: [{ role: "user", content: "hello" }],
+    requiredCapabilities: ["chat"],
+    maxCostCents: 5,
+  });
+  const secondRequest = parseChatCompletionRequest({
+    model: "local-demo",
+    purpose: "chat",
+    dataClassification: "internal",
+    messages: [{ role: "user", content: "different" }],
+    requiredCapabilities: ["chat"],
+    maxCostCents: 5,
+  });
+
+  await service.completeChat(ctx, firstRequest, "idem_1");
+  await assert.rejects(() => service.completeChat(ctx, secondRequest, "idem_1"), (error) => {
+    assert.ok(error instanceof RelayError);
+    assert.equal(error.code, "IDEMPOTENCY_CONFLICT");
+    assert.equal(error.status, 409);
+    return true;
+  });
+
+  assert.equal(adapter.calls, 1);
+});
+
 test("TEST-AUDIT-001 permitted chat records audit and usage without raw prompt", async () => {
   const { service, store, ctx } = fixture();
   const request = parseChatCompletionRequest({
