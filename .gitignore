@@ -1,0 +1,16 @@
+# Local-only implementation guidance
+CODEX_AI_COMPANION_OSS_IMPLEMENTATION_HARNESS.md
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
