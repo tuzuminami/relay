@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { RelayError, validationFailed } from "./errors.ts";
-import type { AuditLog, Clock, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "./ports.ts";
+import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "./ports.ts";
 import { assertRouteAllowed, resolveRoute } from "./route-policy.ts";
 import type { ChatCompletionRequest, ChatCompletionResponse, ProviderConfig, ProviderValidationRequest, ProviderValidationResult, RequestContext, RouteResolution, UsageRecord } from "./types.ts";
 
@@ -11,6 +11,7 @@ export interface RelayServicePorts {
   readonly audit: AuditLog;
   readonly usage: UsageRepository;
   readonly idempotency: IdempotencyStore;
+  readonly completions: CompletionRecorder;
   readonly clock: Clock;
   readonly ids: IdGenerator;
 }
@@ -70,7 +71,7 @@ export class RelayService {
       terminalReason: providerResponse.terminalReason,
     };
 
-    await this.ports.usage.append({
+    const usage: UsageRecord = {
       id: this.ports.ids.next("usage"),
       tenantId: ctx.auth.tenantId,
       requestId: ctx.requestId,
@@ -82,8 +83,8 @@ export class RelayService {
       terminalReason: providerResponse.terminalReason,
       correlationId: ctx.correlationId,
       createdAt: this.ports.clock.now(),
-    });
-    await this.ports.audit.append({
+    };
+    const audit = {
       id: this.ports.ids.next("audit"),
       tenantId: ctx.auth.tenantId,
       actorId: ctx.auth.actorId,
@@ -101,8 +102,15 @@ export class RelayService {
         estimatedCostCents: response.usage.estimatedCostCents,
       },
       createdAt: this.ports.clock.now(),
+    };
+    await this.ports.completions.recordCompletion({
+      tenantId: ctx.auth.tenantId,
+      idempotencyKey,
+      requestHash,
+      response,
+      usage,
+      audit,
     });
-    await this.ports.idempotency.put(ctx.auth.tenantId, idempotencyKey, requestHash, response);
     return response;
   }
 

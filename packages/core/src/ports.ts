@@ -35,6 +35,17 @@ export interface IdempotencyStore {
   put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void>;
 }
 
+export interface CompletionRecorder {
+  recordCompletion(input: {
+    readonly tenantId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly response: ChatCompletionResponse;
+    readonly usage: UsageRecord;
+    readonly audit: AuditEvent;
+  }): Promise<void>;
+}
+
 export interface Clock {
   now(): Date;
 }

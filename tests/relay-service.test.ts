@@ -37,6 +37,7 @@ function fixture() {
     audit: store,
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
+    completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
   });

@@ -1,5 +1,18 @@
+CREATE TABLE IF NOT EXISTS relay_providers (
+  provider_id text PRIMARY KEY,
+  adapter_type text NOT NULL,
+  base_url text NOT NULL,
+  capabilities text[] NOT NULL,
+  secret_reference text NOT NULL,
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  version integer NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS relay_routes (
-  id text PRIMARY KEY,
+  route_id text PRIMARY KEY,
   tenant_id text NOT NULL,
   purpose text NOT NULL,
   data_classifications text[] NOT NULL,
@@ -11,7 +24,9 @@ CREATE TABLE IF NOT EXISTS relay_routes (
   created_at timestamptz NOT NULL DEFAULT now(),
   created_by text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  version integer NOT NULL DEFAULT 1
+  version integer NOT NULL DEFAULT 1,
+  CONSTRAINT relay_routes_provider_fk
+    FOREIGN KEY (provider_id) REFERENCES relay_providers(provider_id)
 );
 
 CREATE TABLE IF NOT EXISTS relay_audit_events (

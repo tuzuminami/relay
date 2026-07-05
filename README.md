@@ -32,11 +32,14 @@ Start PostgreSQL for local integration work:
 
 ```bash
 docker compose up -d postgres
+psql "$RELAY_DATABASE_URL" -f db/migrations/0001_initial.sql
+psql "$RELAY_DATABASE_URL" -f db/seeds/development.sql
 ```
 
 Start the API in development mode:
 
 ```bash
+export RELAY_DATABASE_URL=postgres://relay:relay_dev_password@127.0.0.1:54329/relay
 pnpm run start:api
 ```
 
@@ -81,6 +84,10 @@ curl -s "http://127.0.0.1:8787/v1/chat/completions" \
 Production startup fails if the development auth adapter is enabled. Provider
 credentials are configured as secret references and are not included in public
 configuration exports, audit events, usage records, or test fixtures.
+
+When `RELAY_DATABASE_URL` is set, the API uses PostgreSQL-backed route, usage,
+audit, and idempotency adapters. Without it, the API uses in-memory development
+fixtures only.
 
 ## Repository Boundary
 

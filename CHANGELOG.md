@@ -9,3 +9,5 @@
 - Renamed the license file to `LICENSE` for standard GitHub license detection.
 - Added idempotency-key conflict detection for changed request bodies.
 - Added bounded timeout handling for OpenAI-compatible provider calls.
+- Added PostgreSQL-backed route, provider, usage, audit, and idempotency
+  adapters with transaction-order tests.

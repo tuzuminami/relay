@@ -1,12 +1,33 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { Pool } from "pg";
 import { RelayError } from "../../../packages/core/src/errors.ts";
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
-import { defaultProviderConfig, defaultRoute, FixedClock, InMemoryRelayStore, InMemoryUsageRepository, OpenAiCompatibleHttpAdapter, SequentialIdGenerator, StaticSecretResolver } from "../../../packages/adapters/src/index.ts";
+import { defaultProviderConfig, defaultRoute, FixedClock, InMemoryRelayStore, InMemoryUsageRepository, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver } from "../../../packages/adapters/src/index.ts";
 import { authenticate, validateRuntimeAuthMode } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
+  if (process.env.RELAY_DATABASE_URL !== undefined) {
+    const pool = new Pool({
+      connectionString: process.env.RELAY_DATABASE_URL,
+      connectionTimeoutMillis: 2_000,
+      idleTimeoutMillis: 30_000,
+      allowExitOnIdle: true,
+    });
+    const store = new PostgresRelayStore(pool);
+    return new RelayService({
+      routes: store,
+      secrets: new StaticSecretResolver(new Map([["secret://relay/local-openai-compatible", process.env.RELAY_PROVIDER_API_KEY ?? "dev-placeholder"]])),
+      provider: new OpenAiCompatibleHttpAdapter(),
+      audit: store,
+      usage: store,
+      idempotency: store,
+      completions: store,
+      clock: new FixedClock(new Date()),
+      ids: new SequentialIdGenerator(),
+    });
+  }
   const provider = defaultProviderConfig();
   const store = new InMemoryRelayStore([defaultRoute()], [provider]);
   return new RelayService({
@@ -16,6 +37,7 @@ export function buildDefaultService(): RelayService {
     audit: store,
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
+    completions: store,
     clock: new FixedClock(new Date()),
     ids: new SequentialIdGenerator(),
   });

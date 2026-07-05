@@ -1,5 +1,5 @@
 import { RelayError } from "../../core/src/errors.ts";
-import type { AuditLog, Clock, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "../../core/src/ports.ts";
+import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "../../core/src/ports.ts";
 import type { AuditEvent, ChatCompletionResponse, ModelRoute, ProviderChatRequest, ProviderChatResponse, ProviderConfig, UsageRecord } from "../../core/src/types.ts";
 
 export class FixedClock implements Clock {
@@ -24,7 +24,7 @@ export class SequentialIdGenerator implements IdGenerator {
   }
 }
 
-export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencyStore {
+export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencyStore, CompletionRecorder {
   readonly routes: ModelRoute[];
   readonly providers: ProviderConfig[];
   readonly auditEvents: AuditEvent[] = [];
@@ -58,6 +58,23 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
 
   async put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void> {
     this.idempotency.set(`${tenantId}:${key}`, { requestHash, response });
+  }
+
+  async recordCompletion(input: {
+    readonly tenantId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly response: ChatCompletionResponse;
+    readonly usage: UsageRecord;
+    readonly audit: AuditEvent;
+  }): Promise<void> {
+    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    if (this.idempotency.has(key)) {
+      return;
+    }
+    this.idempotency.set(key, { requestHash: input.requestHash, response: input.response });
+    this.usageRecords.push(input.usage);
+    this.auditEvents.push(input.audit);
   }
 }
 

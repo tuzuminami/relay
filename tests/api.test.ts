@@ -35,6 +35,7 @@ test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
     audit: store,
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
+    completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
   });
