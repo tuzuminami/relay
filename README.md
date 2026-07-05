@@ -32,8 +32,8 @@ Start PostgreSQL for local integration work:
 
 ```bash
 docker compose up -d postgres
-psql "$RELAY_DATABASE_URL" -f db/migrations/0001_initial.sql
-psql "$RELAY_DATABASE_URL" -f db/seeds/development.sql
+pnpm run db:migrate
+pnpm run db:seed
 ```
 
 Start the API in development mode:

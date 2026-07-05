@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Added release-oriented PostgreSQL migration and seed scripts.
+- Added CI PostgreSQL service coverage for tenant-scoped route integration.
+- Replaced the license text with the full standard Apache License 2.0 text so
+  GitHub can detect repository license metadata.
+
 ## 0.1.0
 
 - Added the initial RELAY MVP foundation.

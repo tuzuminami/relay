@@ -8,6 +8,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: relay
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay_dev_password
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -20,4 +34,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check:private-boundary
       - run: pnpm run build
+      - run: pnpm run db:migrate
+        env:
+          RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+      - run: pnpm run db:seed
+        env:
+          RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
       - run: pnpm test
+        env:
+          RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay

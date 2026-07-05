@@ -1,6 +1,6 @@
 {
   "name": "@tuzuminami/relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "license": "Apache-2.0",
@@ -20,6 +20,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "check:private-boundary": "node scripts/check-private-boundary.mjs",
+    "db:migrate": "node scripts/apply-sql.mjs db/migrations/0001_initial.sql",
+    "db:seed": "node scripts/apply-sql.mjs db/seeds/development.sql",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
