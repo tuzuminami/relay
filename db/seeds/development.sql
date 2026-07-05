@@ -1,4 +1,5 @@
 INSERT INTO relay_providers (
+  tenant_id,
   provider_id,
   adapter_type,
   base_url,
@@ -6,13 +7,14 @@ INSERT INTO relay_providers (
   secret_reference,
   created_by
 ) VALUES (
+  'tenant_demo',
   'local-openai-compatible',
   'openai-compatible',
   'http://127.0.0.1:11434',
   ARRAY['chat', 'stream', 'embeddings'],
   'secret://relay/local-openai-compatible',
   'development-seed'
-) ON CONFLICT (provider_id) DO NOTHING;
+) ON CONFLICT (tenant_id, provider_id) DO NOTHING;
 
 INSERT INTO relay_routes (
   route_id,

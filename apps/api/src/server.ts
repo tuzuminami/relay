@@ -5,9 +5,10 @@ import { RelayError } from "../../../packages/core/src/errors.ts";
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
 import { defaultProviderConfig, defaultRoute, FixedClock, InMemoryRelayStore, InMemoryUsageRepository, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver } from "../../../packages/adapters/src/index.ts";
-import { authenticate, validateRuntimeAuthMode } from "./auth.ts";
+import { buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
+  const providerSecret = resolveProviderSecret();
   if (process.env.RELAY_DATABASE_URL !== undefined) {
     const pool = new Pool({
       connectionString: process.env.RELAY_DATABASE_URL,
@@ -16,10 +17,10 @@ export function buildDefaultService(): RelayService {
       allowExitOnIdle: true,
     });
     const store = new PostgresRelayStore(pool);
+    const secrets = new StaticSecretResolver(new Map([["secret://relay/local-openai-compatible", providerSecret]]));
     return new RelayService({
       routes: store,
-      secrets: new StaticSecretResolver(new Map([["secret://relay/local-openai-compatible", process.env.RELAY_PROVIDER_API_KEY ?? "dev-placeholder"]])),
-      provider: new OpenAiCompatibleHttpAdapter(),
+      provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets }),
       audit: store,
       usage: store,
       idempotency: store,
@@ -30,10 +31,10 @@ export function buildDefaultService(): RelayService {
   }
   const provider = defaultProviderConfig();
   const store = new InMemoryRelayStore([defaultRoute()], [provider]);
+  const secrets = new StaticSecretResolver(new Map([[provider.secretReference, providerSecret]]));
   return new RelayService({
     routes: store,
-    secrets: new StaticSecretResolver(new Map([[provider.secretReference, process.env.RELAY_PROVIDER_API_KEY ?? "dev-placeholder"]])),
-    provider: new OpenAiCompatibleHttpAdapter(),
+    provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets }),
     audit: store,
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
@@ -43,18 +44,17 @@ export function buildDefaultService(): RelayService {
   });
 }
 
-export function createRelayHttpServer(service: RelayService = buildDefaultService()) {
-  validateRuntimeAuthMode();
+export function createRelayHttpServer(service: RelayService = buildDefaultService(), authAdapter: AuthAdapter = buildRuntimeAuthAdapter()) {
   return createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, service);
+      await handleRequest(req, res, service, authAdapter);
     } catch (error) {
       writeError(res, error, req.headers["x-correlation-id"]);
     }
   });
 }
 
-async function handleRequest(req: IncomingMessage, res: ServerResponse, service: RelayService): Promise<void> {
+async function handleRequest(req: IncomingMessage, res: ServerResponse, service: RelayService, authAdapter: AuthAdapter): Promise<void> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (req.method === "GET" && url.pathname === "/health") {
     writeJson(res, 200, { data: { status: "ok" }, meta: meta(req) });
@@ -65,7 +65,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, service:
     return;
   }
 
-  const auth = authenticate(singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]));
+  const auth = authAdapter.authenticate(singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]));
   const ctx = {
     auth,
     requestId: randomUUID(),
@@ -102,6 +102,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, service:
   }
 
   throw new RelayError("VALIDATION_FAILED", "Route not found.", 404);
+}
+
+function resolveProviderSecret(): string {
+  const secret = process.env.RELAY_PROVIDER_API_KEY;
+  if (secret !== undefined && secret.length > 0) {
+    return secret;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_PROVIDER_API_KEY or a production secret resolver.", 503);
+  }
+  return "dev-placeholder";
 }
 
 function redactedUsage(record: Awaited<ReturnType<RelayService["listUsage"]>>[number]): Record<string, unknown> {

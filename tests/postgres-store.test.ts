@@ -8,7 +8,7 @@ class FakeClient implements PgClientLike {
 
   async query<Row extends Record<string, unknown> = Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<PgQueryResult<Row>> {
     this.queries.push({ text, values });
-    if (text.startsWith("INSERT INTO relay_idempotency_records")) {
+    if (text.startsWith("INSERT INTO relay_idempotency_records") || text.startsWith("UPDATE relay_idempotency_records")) {
       return { rowCount: 1, rows: [] };
     }
     return { rowCount: null, rows: [] };
@@ -44,6 +44,45 @@ test("TEST-DB-001 route lookup uses tenant_id predicate", async () => {
   assert.ok(query);
   assert.match(query.text, /WHERE tenant_id = \$1/);
   assert.deepEqual(query.values, ["tenant_a"]);
+});
+
+test("TEST-DB-005 provider lookup uses tenant_id and provider_id predicates", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+
+  await store.getProvider("tenant_a", "local");
+
+  assert.equal(pool.queries.length, 1);
+  const query = pool.queries[0];
+  assert.ok(query);
+  assert.match(query.text, /WHERE tenant_id = \$1 AND provider_id = \$2/);
+  assert.deepEqual(query.values, ["tenant_a", "local"]);
+});
+
+test("TEST-DB-003 usage lookup uses tenant_id predicate", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+
+  await store.listForTenant("tenant_a");
+
+  assert.equal(pool.queries.length, 1);
+  const query = pool.queries[0];
+  assert.ok(query);
+  assert.match(query.text, /WHERE tenant_id = \$1/);
+  assert.deepEqual(query.values, ["tenant_a"]);
+});
+
+test("TEST-DB-004 idempotency lookup uses tenant_id and key predicates", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+
+  await store.get("tenant_a", "idem_1");
+
+  assert.equal(pool.queries.length, 1);
+  const query = pool.queries[0];
+  assert.ok(query);
+  assert.match(query.text, /WHERE tenant_id = \$1 AND idempotency_key = \$2/);
+  assert.deepEqual(query.values, ["tenant_a", "idem_1"]);
 });
 
 test("TEST-DB-002 completion persistence uses one transaction and records idempotency before evidence", async () => {
@@ -102,7 +141,7 @@ test("TEST-DB-002 completion persistence uses one transaction and records idempo
     "COMMIT",
     "RELEASE",
   ]);
-  assert.match(statements[1] ?? "", /INSERT INTO relay_idempotency_records/);
+  assert.match(statements[1] ?? "", /UPDATE relay_idempotency_records/);
   assert.match(statements[2] ?? "", /INSERT INTO relay_usage_records/);
   assert.match(statements[3] ?? "", /INSERT INTO relay_audit_events/);
 });

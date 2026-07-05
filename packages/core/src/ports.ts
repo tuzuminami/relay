@@ -8,9 +8,21 @@ import type {
   UsageRecord,
 } from "./types.ts";
 
+export type IdempotencyReservation =
+  | { readonly status: "reserved" }
+  | { readonly status: "in_progress"; readonly requestHash: string }
+  | { readonly status: "completed"; readonly requestHash: string; readonly response: ChatCompletionResponse }
+  | { readonly status: "failed"; readonly requestHash: string }
+  | { readonly status: "conflict"; readonly requestHash: string };
+
+export type IdempotencyRecord =
+  | { readonly status: "in_progress"; readonly requestHash: string }
+  | { readonly status: "completed"; readonly requestHash: string; readonly response: ChatCompletionResponse }
+  | { readonly status: "failed"; readonly requestHash: string };
+
 export interface RouteCatalog {
   listRoutesForTenant(tenantId: string): Promise<readonly ModelRoute[]>;
-  getProvider(providerId: string): Promise<ProviderConfig | undefined>;
+  getProvider(tenantId: string, providerId: string): Promise<ProviderConfig | undefined>;
 }
 
 export interface SecretResolver {
@@ -31,8 +43,10 @@ export interface UsageRepository {
 }
 
 export interface IdempotencyStore {
+  lookup(tenantId: string, key: string): Promise<IdempotencyRecord | undefined>;
+  reserve(tenantId: string, key: string, requestHash: string): Promise<IdempotencyReservation>;
   get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined>;
-  put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void>;
+  fail(tenantId: string, key: string, requestHash: string): Promise<void>;
 }
 
 export interface CompletionRecorder {

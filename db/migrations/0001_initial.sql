@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS relay_providers (
-  provider_id text PRIMARY KEY,
+  tenant_id text NOT NULL DEFAULT 'tenant_demo',
+  provider_id text NOT NULL,
   adapter_type text NOT NULL,
   base_url text NOT NULL,
   capabilities text[] NOT NULL,
@@ -8,7 +9,8 @@ CREATE TABLE IF NOT EXISTS relay_providers (
   created_at timestamptz NOT NULL DEFAULT now(),
   created_by text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  version integer NOT NULL DEFAULT 1
+  version integer NOT NULL DEFAULT 1,
+  PRIMARY KEY (tenant_id, provider_id)
 );
 
 CREATE TABLE IF NOT EXISTS relay_routes (
@@ -26,8 +28,27 @@ CREATE TABLE IF NOT EXISTS relay_routes (
   updated_at timestamptz NOT NULL DEFAULT now(),
   version integer NOT NULL DEFAULT 1,
   CONSTRAINT relay_routes_provider_fk
-    FOREIGN KEY (provider_id) REFERENCES relay_providers(provider_id)
+    FOREIGN KEY (tenant_id, provider_id) REFERENCES relay_providers(tenant_id, provider_id)
 );
+
+ALTER TABLE relay_providers
+  ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT 'tenant_demo';
+
+ALTER TABLE relay_routes
+  DROP CONSTRAINT IF EXISTS relay_routes_provider_fk;
+
+ALTER TABLE relay_providers
+  DROP CONSTRAINT IF EXISTS relay_providers_pkey;
+
+ALTER TABLE relay_providers
+  ADD CONSTRAINT relay_providers_pkey PRIMARY KEY (tenant_id, provider_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS relay_providers_tenant_provider_uidx
+  ON relay_providers (tenant_id, provider_id);
+
+ALTER TABLE relay_routes
+  ADD CONSTRAINT relay_routes_provider_fk
+    FOREIGN KEY (tenant_id, provider_id) REFERENCES relay_providers(tenant_id, provider_id);
 
 CREATE TABLE IF NOT EXISTS relay_audit_events (
   id text PRIMARY KEY,
@@ -71,7 +92,30 @@ CREATE TABLE IF NOT EXISTS relay_idempotency_records (
   tenant_id text NOT NULL,
   idempotency_key text NOT NULL,
   request_hash text NOT NULL,
-  response_json jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'in_progress',
+  response_json jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT relay_idempotency_status_check
+    CHECK (status IN ('in_progress', 'completed', 'failed')),
   PRIMARY KEY (tenant_id, idempotency_key)
 );
+
+ALTER TABLE relay_idempotency_records
+  ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'completed';
+
+ALTER TABLE relay_idempotency_records
+  ALTER COLUMN status SET DEFAULT 'in_progress';
+
+ALTER TABLE relay_idempotency_records
+  ALTER COLUMN response_json DROP NOT NULL;
+
+ALTER TABLE relay_idempotency_records
+  ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+
+ALTER TABLE relay_idempotency_records
+  DROP CONSTRAINT IF EXISTS relay_idempotency_status_check;
+
+ALTER TABLE relay_idempotency_records
+  ADD CONSTRAINT relay_idempotency_status_check
+    CHECK (status IN ('in_progress', 'completed', 'failed'));

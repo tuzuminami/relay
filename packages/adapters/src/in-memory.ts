@@ -29,7 +29,11 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
   readonly providers: ProviderConfig[];
   readonly auditEvents: AuditEvent[] = [];
   readonly usageRecords: UsageRecord[] = [];
-  private readonly idempotency = new Map<string, { readonly requestHash: string; readonly response: ChatCompletionResponse }>();
+  private readonly idempotency = new Map<string, {
+    readonly requestHash: string;
+    readonly response?: ChatCompletionResponse;
+    readonly status: "in_progress" | "completed" | "failed";
+  }>();
 
   constructor(routes: readonly ModelRoute[], providers: readonly ProviderConfig[]) {
     this.routes = [...routes];
@@ -40,8 +44,8 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     return this.routes.filter((route) => route.tenantId === tenantId);
   }
 
-  async getProvider(providerId: string): Promise<ProviderConfig | undefined> {
-    return this.providers.find((provider) => provider.providerId === providerId);
+  async getProvider(tenantId: string, providerId: string): Promise<ProviderConfig | undefined> {
+    return this.providers.find((provider) => provider.tenantId === tenantId && provider.providerId === providerId);
   }
 
   async append(event: AuditEvent): Promise<void> {
@@ -53,11 +57,52 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
   }
 
   async get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
-    return this.idempotency.get(`${tenantId}:${key}`);
+    const record = await this.lookup(tenantId, key);
+    if (record === undefined || record.status !== "completed") {
+      return undefined;
+    }
+    return { requestHash: record.requestHash, response: record.response };
   }
 
-  async put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void> {
-    this.idempotency.set(`${tenantId}:${key}`, { requestHash, response });
+  async lookup(tenantId: string, key: string) {
+    const record = this.idempotency.get(`${tenantId}:${key}`);
+    if (record === undefined) {
+      return undefined;
+    }
+    if (record.status === "completed" && record.response !== undefined) {
+      return { status: "completed" as const, requestHash: record.requestHash, response: record.response };
+    }
+    if (record.status === "failed") {
+      return { status: "failed" as const, requestHash: record.requestHash };
+    }
+    return { status: "in_progress" as const, requestHash: record.requestHash };
+  }
+
+  async reserve(tenantId: string, key: string, requestHash: string) {
+    const idempotencyKey = `${tenantId}:${key}`;
+    const record = this.idempotency.get(idempotencyKey);
+    if (record === undefined) {
+      this.idempotency.set(idempotencyKey, { requestHash, status: "in_progress" });
+      return { status: "reserved" as const };
+    }
+    if (record.requestHash !== requestHash) {
+      return { status: "conflict" as const, requestHash: record.requestHash };
+    }
+    if (record.status === "completed" && record.response !== undefined) {
+      return { status: "completed" as const, requestHash: record.requestHash, response: record.response };
+    }
+    if (record.status === "failed") {
+      return { status: "failed" as const, requestHash: record.requestHash };
+    }
+    return { status: "in_progress" as const, requestHash: record.requestHash };
+  }
+
+  async fail(tenantId: string, key: string, requestHash: string): Promise<void> {
+    const idempotencyKey = `${tenantId}:${key}`;
+    const record = this.idempotency.get(idempotencyKey);
+    if (record !== undefined && record.requestHash === requestHash && record.status === "in_progress") {
+      this.idempotency.set(idempotencyKey, { requestHash, status: "failed" });
+    }
   }
 
   async recordCompletion(input: {
@@ -69,10 +114,11 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     readonly audit: AuditEvent;
   }): Promise<void> {
     const key = `${input.tenantId}:${input.idempotencyKey}`;
-    if (this.idempotency.has(key)) {
-      return;
+    const existing = this.idempotency.get(key);
+    if (existing === undefined || existing.requestHash !== input.requestHash || existing.status !== "in_progress") {
+      throw new RelayError("IDEMPOTENCY_CONFLICT", "Idempotency key was already recorded.", 409);
     }
-    this.idempotency.set(key, { requestHash: input.requestHash, response: input.response });
+    this.idempotency.set(key, { requestHash: input.requestHash, response: input.response, status: "completed" });
     this.usageRecords.push(input.usage);
     this.auditEvents.push(input.audit);
   }

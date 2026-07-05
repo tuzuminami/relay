@@ -1,15 +1,17 @@
 import { RelayError } from "../../core/src/errors.ts";
-import type { ProviderAdapter } from "../../core/src/ports.ts";
+import type { ProviderAdapter, SecretResolver } from "../../core/src/ports.ts";
 import type { ChatMessage, ProviderChatRequest, ProviderChatResponse } from "../../core/src/types.ts";
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 export class OpenAiCompatibleHttpAdapter implements ProviderAdapter {
   private readonly fetchFn: FetchLike;
+  private readonly secretResolver: SecretResolver;
   private readonly timeoutMs: number;
 
-  constructor(options: { readonly fetchFn?: FetchLike; readonly timeoutMs?: number } = {}) {
+  constructor(options: { readonly fetchFn?: FetchLike; readonly secretResolver: SecretResolver; readonly timeoutMs?: number }) {
     this.fetchFn = options.fetchFn ?? fetch;
+    this.secretResolver = options.secretResolver;
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
@@ -19,10 +21,11 @@ export class OpenAiCompatibleHttpAdapter implements ProviderAdapter {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
+      const secretValue = await this.secretResolver.resolveSecret(request.provider.secretReference);
       response = await this.fetchFn(`${request.provider.baseUrl.replace(/\/$/, "")}/v1/chat/completions`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${request.secretValue}`,
+          authorization: `Bearer ${secretValue}`,
           "content-type": "application/json",
           "x-correlation-id": request.correlationId,
         },
@@ -33,6 +36,9 @@ export class OpenAiCompatibleHttpAdapter implements ProviderAdapter {
         }),
       });
     } catch (error) {
+      if (error instanceof RelayError) {
+        throw error;
+      }
       throw providerUnavailable(error);
     } finally {
       clearTimeout(timeout);

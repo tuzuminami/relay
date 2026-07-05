@@ -48,6 +48,7 @@ export interface TokenUsage {
 }
 
 export interface ProviderConfig {
+  readonly tenantId: string;
   readonly providerId: string;
   readonly adapterType: "openai-compatible";
   readonly baseUrl: string;
@@ -77,7 +78,6 @@ export interface RouteResolution {
 
 export interface ProviderChatRequest {
   readonly provider: ProviderConfig;
-  readonly secretValue: string;
   readonly model: string;
   readonly messages: readonly ChatMessage[];
   readonly correlationId: string;

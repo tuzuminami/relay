@@ -20,6 +20,7 @@ export interface PgPoolLike extends PgQueryable {
 }
 
 interface ProviderRow extends Record<string, unknown> {
+  readonly tenant_id: string;
   readonly provider_id: string;
   readonly adapter_type: "openai-compatible";
   readonly base_url: string;
@@ -58,7 +59,8 @@ interface UsageRow extends Record<string, unknown> {
 
 interface IdempotencyRow extends Record<string, unknown> {
   readonly request_hash: string;
-  readonly response_json: ChatCompletionResponse;
+  readonly response_json: ChatCompletionResponse | null;
+  readonly status: "in_progress" | "completed" | "failed";
 }
 
 export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageRepository, IdempotencyStore, CompletionRecorder {
@@ -80,12 +82,12 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     return result.rows.map(routeFromRow);
   }
 
-  async getProvider(providerId: string): Promise<ProviderConfig | undefined> {
+  async getProvider(tenantId: string, providerId: string): Promise<ProviderConfig | undefined> {
     const result = await this.pool.query<ProviderRow>(
-      `SELECT provider_id, adapter_type, base_url, capabilities, secret_reference, enabled
+      `SELECT tenant_id, provider_id, adapter_type, base_url, capabilities, secret_reference, enabled
          FROM relay_providers
-        WHERE provider_id = $1 AND enabled = true`,
-      [providerId],
+        WHERE tenant_id = $1 AND provider_id = $2 AND enabled = true`,
+      [tenantId, providerId],
     );
     const row = result.rows[0];
     return row === undefined ? undefined : providerFromRow(row);
@@ -116,18 +118,78 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
   }
 
   async get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
+    const record = await this.lookup(tenantId, key);
+    if (record === undefined || record.status !== "completed") {
+      return undefined;
+    }
+    return { requestHash: record.requestHash, response: record.response };
+  }
+
+  async lookup(tenantId: string, key: string) {
     const result = await this.pool.query<IdempotencyRow>(
-      `SELECT request_hash, response_json
+      `SELECT request_hash, response_json, status
          FROM relay_idempotency_records
         WHERE tenant_id = $1 AND idempotency_key = $2`,
       [tenantId, key],
     );
     const row = result.rows[0];
-    return row === undefined ? undefined : { requestHash: row.request_hash, response: row.response_json };
+    if (row === undefined) {
+      return undefined;
+    }
+    if (row.status === "completed" && row.response_json !== null) {
+      return { status: "completed" as const, requestHash: row.request_hash, response: row.response_json };
+    }
+    if (row.status === "failed") {
+      return { status: "failed" as const, requestHash: row.request_hash };
+    }
+    return { status: "in_progress" as const, requestHash: row.request_hash };
   }
 
-  async put(tenantId: string, key: string, requestHash: string, response: ChatCompletionResponse): Promise<void> {
-    await insertIdempotency(this.pool, tenantId, key, requestHash, response);
+  async reserve(tenantId: string, key: string, requestHash: string) {
+    const insert = await this.pool.query(
+      `INSERT INTO relay_idempotency_records
+        (tenant_id, idempotency_key, request_hash, status)
+       VALUES ($1, $2, $3, 'in_progress')
+       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
+      [tenantId, key, requestHash],
+    );
+    if (insert.rowCount === 1) {
+      return { status: "reserved" as const };
+    }
+
+    const result = await this.pool.query<IdempotencyRow>(
+      `SELECT request_hash, response_json, status
+         FROM relay_idempotency_records
+        WHERE tenant_id = $1 AND idempotency_key = $2`,
+      [tenantId, key],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      return { status: "conflict" as const, requestHash: "" };
+    }
+    if (row.request_hash !== requestHash) {
+      return { status: "conflict" as const, requestHash: row.request_hash };
+    }
+    if (row.status === "completed" && row.response_json !== null) {
+      return { status: "completed" as const, requestHash: row.request_hash, response: row.response_json };
+    }
+    if (row.status === "failed") {
+      return { status: "failed" as const, requestHash: row.request_hash };
+    }
+    return { status: "in_progress" as const, requestHash: row.request_hash };
+  }
+
+  async fail(tenantId: string, key: string, requestHash: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE relay_idempotency_records
+          SET status = 'failed',
+              completed_at = COALESCE(completed_at, now())
+        WHERE tenant_id = $1
+          AND idempotency_key = $2
+          AND request_hash = $3
+          AND status = 'in_progress'`,
+      [tenantId, key, requestHash],
+    );
   }
 
   async recordCompletion(input: {
@@ -141,7 +203,7 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await insertIdempotency(client, input.tenantId, input.idempotencyKey, input.requestHash, input.response);
+      await completeIdempotency(client, input.tenantId, input.idempotencyKey, input.requestHash, input.response);
       await insertUsage(client, input.usage);
       await insertAudit(client, input.audit);
       await client.query("COMMIT");
@@ -154,7 +216,7 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
   }
 }
 
-async function insertIdempotency(
+async function completeIdempotency(
   queryable: PgQueryable,
   tenantId: string,
   idempotencyKey: string,
@@ -162,10 +224,14 @@ async function insertIdempotency(
   response: ChatCompletionResponse,
 ): Promise<void> {
   const result = await queryable.query(
-    `INSERT INTO relay_idempotency_records
-      (tenant_id, idempotency_key, request_hash, response_json)
-     VALUES ($1, $2, $3, $4::jsonb)
-     ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
+    `UPDATE relay_idempotency_records
+        SET response_json = $4::jsonb,
+            status = 'completed',
+            completed_at = COALESCE(completed_at, now())
+      WHERE tenant_id = $1
+        AND idempotency_key = $2
+        AND request_hash = $3
+        AND status = 'in_progress'`,
     [tenantId, idempotencyKey, requestHash, response],
   );
   if (result.rowCount !== 1) {
@@ -221,6 +287,7 @@ async function insertAudit(queryable: PgQueryable, event: AuditEvent): Promise<v
 
 function providerFromRow(row: ProviderRow): ProviderConfig {
   return {
+    tenantId: row.tenant_id,
     providerId: row.provider_id,
     adapterType: row.adapter_type,
     baseUrl: row.base_url,

@@ -2,6 +2,7 @@ import type { ModelRoute, ProviderConfig } from "../../core/src/types.ts";
 
 export function defaultProviderConfig(): ProviderConfig {
   return {
+    tenantId: "tenant_demo",
     providerId: "local-openai-compatible",
     adapterType: "openai-compatible",
     baseUrl: process.env.RELAY_PROVIDER_BASE_URL ?? "http://127.0.0.1:11434",
