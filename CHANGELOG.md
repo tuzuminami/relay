@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0 - 2026-07-13
+
+- Added a production auth-module boundary. Production startup now requires an
+  explicit `RELAY_AUTH_MODULE` that supplies verified tenant, actor, and scopes.
+- Finalized the tenant-scoped route dry-run, idempotent chat completion,
+  PostgreSQL persistence, audit/usage redaction, and OpenAPI contract.
+- Added V1 release verification through the PostgreSQL GitHub Actions service.
+
 ## 0.2.0
 
 - Added release-oriented PostgreSQL migration and seed scripts.
