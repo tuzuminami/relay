@@ -1,4 +1,5 @@
 import { RelayError } from "../../../packages/core/src/errors.ts";
+import { isProductionRuntime, runtimeAuthModeFromEnvironment } from "../../../packages/core/src/provider-url.ts";
 import type { AuthContext } from "../../../packages/core/src/types.ts";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -45,7 +46,7 @@ export function authenticate(authorization: string | undefined, tenantHeader: st
 }
 
 export function buildRuntimeAuthAdapter(): AuthAdapter {
-  const adapter = process.env.RELAY_AUTH_ADAPTER ?? "development";
+  const adapter = runtimeAuthModeFromEnvironment();
   if (adapter === "production") {
     throw new RelayError("CONFIGURATION_INVALID", "Production auth must be loaded before server startup.", 503);
   }
@@ -54,7 +55,7 @@ export function buildRuntimeAuthAdapter(): AuthAdapter {
 }
 
 export async function loadRuntimeAuthAdapter(): Promise<AuthAdapter> {
-  const adapter = process.env.RELAY_AUTH_ADAPTER ?? "development";
+  const adapter = runtimeAuthModeFromEnvironment();
   if (adapter !== "production") {
     return buildRuntimeAuthAdapter();
   }
@@ -75,8 +76,8 @@ export async function loadRuntimeAuthAdapter(): Promise<AuthAdapter> {
 }
 
 export function validateRuntimeAuthMode(): void {
-  const adapter = process.env.RELAY_AUTH_ADAPTER ?? "development";
-  if (process.env.NODE_ENV === "production" && adapter !== "production") {
+  const adapter = runtimeAuthModeFromEnvironment();
+  if (isProductionRuntime() && adapter !== "production") {
     throw new RelayError("CONFIGURATION_INVALID", "Production requires a production auth adapter.", 503);
   }
 }

@@ -26,7 +26,13 @@ export interface RouteCatalog {
 }
 
 export interface SecretResolver {
-  resolveSecret(reference: string): Promise<string>;
+  resolveSecret(binding: SecretBinding): Promise<string>;
+}
+
+export interface SecretBinding {
+  readonly tenantId: string;
+  readonly reference: string;
+  readonly allowedOrigin: string;
 }
 
 export interface ProviderAdapter {

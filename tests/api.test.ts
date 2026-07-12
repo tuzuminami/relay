@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
-import { buildDefaultService, createRelayHttpServer } from "../apps/api/src/server.ts";
+import { buildDefaultService, createRelayHttpServer, runtimeProviderEgressPolicy } from "../apps/api/src/server.ts";
 import { loadRuntimeAuthAdapter, validateRuntimeAuthMode } from "../apps/api/src/auth.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
 import { RelayService } from "../packages/core/src/relay-service.ts";
@@ -192,6 +192,83 @@ test("TEST-CONFIG-001 production startup rejects placeholder provider credential
     } else {
       process.env.RELAY_DATABASE_URL = previousDatabaseUrl;
     }
+  }
+});
+
+test("TEST-CONFIG-002 production startup requires an explicit provider origin allowlist", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousProviderKey = process.env.RELAY_PROVIDER_API_KEY;
+  const previousAllowedOrigins = process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+  process.env.NODE_ENV = "production";
+  process.env.RELAY_PROVIDER_API_KEY = "sk-test-only";
+  delete process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+
+  try {
+    assert.throws(() => buildDefaultService(), (error) => {
+      assert.ok(error instanceof RelayError);
+      assert.equal(error.code, "CONFIGURATION_INVALID");
+      assert.deepEqual(error.details, ["BASE_URL_ORIGIN_NOT_ALLOWED"]);
+      return true;
+    });
+  } finally {
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    if (previousProviderKey === undefined) {
+      delete process.env.RELAY_PROVIDER_API_KEY;
+    } else {
+      process.env.RELAY_PROVIDER_API_KEY = previousProviderKey;
+    }
+    if (previousAllowedOrigins === undefined) {
+      delete process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+    } else {
+      process.env.RELAY_PROVIDER_ALLOWED_ORIGINS = previousAllowedOrigins;
+    }
+  }
+});
+
+test("TEST-CONFIG-003 production auth mode enables fail-closed provider egress without NODE_ENV", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousAuthAdapter = process.env.RELAY_AUTH_ADAPTER;
+  const previousAllowedOrigins = process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+  delete process.env.NODE_ENV;
+  process.env.RELAY_AUTH_ADAPTER = "production";
+  delete process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+
+  try {
+    assert.throws(() => runtimeProviderEgressPolicy(), (error) => {
+      assert.ok(error instanceof RelayError);
+      assert.deepEqual(error.details, ["BASE_URL_ORIGIN_NOT_ALLOWED"]);
+      return true;
+    });
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousAuthAdapter === undefined) delete process.env.RELAY_AUTH_ADAPTER;
+    else process.env.RELAY_AUTH_ADAPTER = previousAuthAdapter;
+    if (previousAllowedOrigins === undefined) delete process.env.RELAY_PROVIDER_ALLOWED_ORIGINS;
+    else process.env.RELAY_PROVIDER_ALLOWED_ORIGINS = previousAllowedOrigins;
+  }
+});
+
+test("TEST-CONFIG-004 unknown runtime and auth modes fail at startup", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousAuthAdapter = process.env.RELAY_AUTH_ADAPTER;
+  try {
+    process.env.NODE_ENV = "staging";
+    process.env.RELAY_AUTH_ADAPTER = "development";
+    assert.throws(() => runtimeProviderEgressPolicy(), RelayError);
+
+    process.env.NODE_ENV = "development";
+    process.env.RELAY_AUTH_ADAPTER = "passthrough";
+    assert.throws(() => validateRuntimeAuthMode(), RelayError);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousAuthAdapter === undefined) delete process.env.RELAY_AUTH_ADAPTER;
+    else process.env.RELAY_AUTH_ADAPTER = previousAuthAdapter;
   }
 });
 
