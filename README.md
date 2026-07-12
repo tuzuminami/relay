@@ -140,6 +140,12 @@ development bearer tokens are rejected in production. Provider credentials are
 configured as secret references and are not included in public
 configuration exports, audit events, usage records, or test fixtures.
 
+Production provider egress is fail-closed. Set `RELAY_PROVIDER_ALLOWED_ORIGINS`
+to a comma-separated list of exact HTTPS origins (for example,
+`https://api.openai.com`). RELAY rejects provider URLs outside that allowlist,
+non-HTTPS URLs, redirects, loopback/private/link-local/metadata targets, and
+numeric or IPv6 host forms. Provider secrets are resolved only after this check.
+
 When `RELAY_DATABASE_URL` is set, the API uses PostgreSQL-backed route, usage,
 audit, and idempotency adapters. Without it, the API uses in-memory development
 fixtures only.

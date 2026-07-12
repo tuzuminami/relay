@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { RelayError } from "../../../packages/core/src/errors.ts";
+import { allowedOriginsFromEnvironment, canonicalProviderOrigin, isProductionRuntime, providerBaseUrlRejectionReasons, type ProviderEgressPolicy } from "../../../packages/core/src/provider-url.ts";
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
 import { defaultProviderConfig, defaultRoute, FixedClock, InMemoryRelayStore, InMemoryUsageRepository, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver } from "../../../packages/adapters/src/index.ts";
@@ -9,6 +10,7 @@ import { buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
   const providerSecret = resolveProviderSecret();
+  const providerEgressPolicy = runtimeProviderEgressPolicy();
   if (process.env.RELAY_DATABASE_URL !== undefined) {
     const pool = new Pool({
       connectionString: process.env.RELAY_DATABASE_URL,
@@ -17,31 +19,47 @@ export function buildDefaultService(): RelayService {
       allowExitOnIdle: true,
     });
     const store = new PostgresRelayStore(pool);
-    const secrets = new StaticSecretResolver(new Map([["secret://relay/local-openai-compatible", providerSecret]]));
+    const provider = defaultProviderConfig();
+    const secrets = new StaticSecretResolver(new Map([[provider.secretReference, { value: providerSecret, tenantId: provider.tenantId, allowedOrigin: canonicalProviderOrigin(provider.baseUrl) }]]));
     return new RelayService({
       routes: store,
-      provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets }),
+      provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets, egressPolicy: providerEgressPolicy }),
       audit: store,
       usage: store,
       idempotency: store,
       completions: store,
       clock: new FixedClock(new Date()),
       ids: new SequentialIdGenerator(),
+      providerEgressPolicy,
     });
   }
   const provider = defaultProviderConfig();
+  const providerBaseUrlRejections = providerBaseUrlRejectionReasons(provider.baseUrl, providerEgressPolicy);
+  if (providerBaseUrlRejections.length > 0) {
+    throw new RelayError("CONFIGURATION_INVALID", "Configured provider base URL is not permitted.", 503, providerBaseUrlRejections);
+  }
   const store = new InMemoryRelayStore([defaultRoute()], [provider]);
-  const secrets = new StaticSecretResolver(new Map([[provider.secretReference, providerSecret]]));
+  const secrets = new StaticSecretResolver(new Map([[provider.secretReference, { value: providerSecret, tenantId: provider.tenantId, allowedOrigin: canonicalProviderOrigin(provider.baseUrl) }]]));
   return new RelayService({
     routes: store,
-    provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets }),
+    provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets, egressPolicy: providerEgressPolicy }),
     audit: store,
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
     completions: store,
     clock: new FixedClock(new Date()),
     ids: new SequentialIdGenerator(),
+    providerEgressPolicy,
   });
+}
+
+export function runtimeProviderEgressPolicy(): ProviderEgressPolicy {
+  const production = isProductionRuntime();
+  const allowedOrigins = allowedOriginsFromEnvironment(process.env.RELAY_PROVIDER_ALLOWED_ORIGINS);
+  if (production && allowedOrigins.length === 0) {
+    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_PROVIDER_ALLOWED_ORIGINS.", 503, ["BASE_URL_ORIGIN_NOT_ALLOWED"]);
+  }
+  return { production, allowedOrigins };
 }
 
 export function createRelayHttpServer(service: RelayService = buildDefaultService(), authAdapter: AuthAdapter = buildRuntimeAuthAdapter()) {
@@ -109,7 +127,7 @@ function resolveProviderSecret(): string {
   if (secret !== undefined && secret.length > 0) {
     return secret;
   }
-  if (process.env.NODE_ENV === "production") {
+  if (isProductionRuntime()) {
     throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_PROVIDER_API_KEY or a production secret resolver.", 503);
   }
   return "dev-placeholder";

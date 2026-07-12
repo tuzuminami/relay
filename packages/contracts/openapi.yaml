@@ -264,6 +264,11 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
   /v1/providers/validate:
     post:
+      description: >-
+        Validates provider configuration without contacting the provider. In
+        production, baseUrl must be HTTPS and match the configured exact origin
+        allowlist; loopback, private, link-local, metadata, numeric, and IPv6
+        host forms are rejected.
       security:
         - bearerAuth: []
       parameters:

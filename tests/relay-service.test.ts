@@ -10,7 +10,7 @@ const provider: ProviderConfig = {
   tenantId: "tenant_a",
   providerId: "local",
   adapterType: "openai-compatible",
-  baseUrl: "http://127.0.0.1:9999",
+  baseUrl: "https://provider.example.test",
   capabilities: ["chat"],
   secretReference: "secret://local",
   enabled: true,
@@ -28,7 +28,7 @@ const route: ModelRoute = {
   enabled: true,
 };
 
-function fixture() {
+function fixture(providerAddressResolver = { resolve: async () => ["93.184.216.34"] }) {
   const store = new InMemoryRelayStore([route], [provider]);
   const adapter = new StubProviderAdapter();
   const service = new RelayService({
@@ -40,6 +40,7 @@ function fixture() {
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
+    providerAddressResolver,
   });
   const ctx: RequestContext = {
     auth: {
@@ -402,7 +403,7 @@ test("TEST-PROVIDER-001 provider validation audits without exposing secret value
   const result = await service.validateProvider(ctx, {
     providerId: "candidate",
     adapterType: "openai-compatible",
-    baseUrl: "http://127.0.0.1:11434",
+    baseUrl: "https://provider.example.test",
     capabilities: ["chat"],
     secretReference: "secret://candidate",
   });
@@ -410,4 +411,19 @@ test("TEST-PROVIDER-001 provider validation audits without exposing secret value
   assert.equal(result.valid, true);
   assert.equal(store.auditEvents.length, 1);
   assert.equal(JSON.stringify(store.auditEvents).includes("secret://candidate"), false);
+});
+
+test("TEST-PROVIDER-002 provider validation rejects a private rebinding DNS answer", async () => {
+  const { service, ctx } = fixture({ resolve: async () => ["93.184.216.34", "::ffff:127.0.0.1"] });
+
+  const result = await service.validateProvider(ctx, {
+    providerId: "candidate",
+    adapterType: "openai-compatible",
+    baseUrl: "https://provider.example.test",
+    capabilities: ["chat"],
+    secretReference: "secret://candidate",
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.reasonCodes, ["BASE_URL_DNS_PRIVATE"]);
 });

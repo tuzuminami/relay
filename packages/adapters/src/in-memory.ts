@@ -1,5 +1,5 @@
 import { RelayError } from "../../core/src/errors.ts";
-import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretResolver, UsageRepository } from "../../core/src/ports.ts";
+import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, SecretBinding, SecretResolver, UsageRepository } from "../../core/src/ports.ts";
 import type { AuditEvent, ChatCompletionResponse, ModelRoute, ProviderChatRequest, ProviderChatResponse, ProviderConfig, UsageRecord } from "../../core/src/types.ts";
 
 export class FixedClock implements Clock {
@@ -141,19 +141,25 @@ export class InMemoryUsageRepository implements UsageRepository {
 }
 
 export class StaticSecretResolver implements SecretResolver {
-  private readonly secrets: ReadonlyMap<string, string>;
+  private readonly secrets: ReadonlyMap<string, StaticSecret>;
 
-  constructor(secrets: ReadonlyMap<string, string>) {
+  constructor(secrets: ReadonlyMap<string, StaticSecret>) {
     this.secrets = secrets;
   }
 
-  async resolveSecret(reference: string): Promise<string> {
-    const secret = this.secrets.get(reference);
-    if (secret === undefined) {
+  async resolveSecret(binding: SecretBinding): Promise<string> {
+    const secret = this.secrets.get(binding.reference);
+    if (secret === undefined || secret.tenantId !== binding.tenantId || secret.allowedOrigin !== binding.allowedOrigin) {
       throw new RelayError("CONFIGURATION_INVALID", "Configured secret reference is unavailable.", 503, [], true);
     }
-    return secret;
+    return secret.value;
   }
+}
+
+export interface StaticSecret {
+  readonly value: string;
+  readonly tenantId: string;
+  readonly allowedOrigin: string;
 }
 
 export class StubProviderAdapter implements ProviderAdapter {

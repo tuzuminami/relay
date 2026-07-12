@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { RelayError, validationFailed } from "./errors.ts";
 import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, UsageRepository } from "./ports.ts";
+import { providerAddressRejectionReasons, providerBaseUrlRejectionReasons, systemProviderAddressResolver, type ProviderAddressResolver, type ProviderEgressPolicy } from "./provider-url.ts";
 import { assertRouteAllowed, resolveRoute } from "./route-policy.ts";
 import type { ChatCompletionRequest, ChatCompletionResponse, ProviderConfig, ProviderValidationRequest, ProviderValidationResult, RequestContext, RouteResolution, UsageRecord } from "./types.ts";
 
@@ -13,6 +14,8 @@ export interface RelayServicePorts {
   readonly completions: CompletionRecorder;
   readonly clock: Clock;
   readonly ids: IdGenerator;
+  readonly providerEgressPolicy?: ProviderEgressPolicy;
+  readonly providerAddressResolver?: ProviderAddressResolver;
 }
 
 export class RelayService {
@@ -154,10 +157,9 @@ export class RelayService {
     if (!request.secretReference.startsWith("secret://")) {
       reasons.push("SECRET_REFERENCE_REQUIRED");
     }
-    try {
-      new URL(request.baseUrl);
-    } catch {
-      reasons.push("BASE_URL_INVALID");
+    reasons.push(...providerBaseUrlRejectionReasons(request.baseUrl, this.ports.providerEgressPolicy ?? { production: false, allowedOrigins: [] }));
+    if (reasons.length === 0) {
+      reasons.push(...await providerAddressRejectionReasons(request.baseUrl, this.ports.providerAddressResolver ?? systemProviderAddressResolver));
     }
     await this.ports.audit.append({
       id: this.ports.ids.next("audit"),

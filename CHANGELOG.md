@@ -2,6 +2,8 @@
 
 ## 1.0.0 - 2026-07-13
 
+- Hardened OpenAI-compatible provider egress with production HTTPS/origin
+  allowlisting, redirect rejection, and blocked private/metadata address forms.
 - Added a production auth-module boundary. Production startup now requires an
   explicit `RELAY_AUTH_MODULE` that supplies verified tenant, actor, and scopes.
 - Finalized the tenant-scoped route dry-run, idempotent chat completion,
