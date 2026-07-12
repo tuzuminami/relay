@@ -57,11 +57,15 @@ classification, capability, and cost constraints permit the route.
 This repository is intentionally narrow. It does not train models, provide a
 secret vault, or promise feature parity across providers.
 
-## Current MVP
+## Status
+
+RELAY V1.0.0 is a narrow Policy Enforcement Point for VEIL-governed model
+requests. It resolves an approved route before a provider call, rather than
+trying to compete as a general-purpose inference gateway.
 
 - Route dry-run: `GET /v1/routes/resolve`
 - Chat completion: `POST /v1/chat/completions`
-- Development/test auth adapter with tenant-scope enforcement
+- Production auth-module boundary with verified tenant-scope enforcement
 - Deterministic route checks before any provider call
 - Secret references resolved only at the adapter boundary
 - Append-only audit and usage records
@@ -73,9 +77,7 @@ secret vault, or promise feature parity across providers.
 
 ```bash
 pnpm install
-pnpm run check:private-boundary
-pnpm run build
-pnpm test
+pnpm run verify
 ```
 
 Start PostgreSQL for local integration work:
@@ -131,8 +133,11 @@ curl -s "http://127.0.0.1:8787/v1/chat/completions" \
 
 ## Configuration Notes
 
-Production startup fails if the development auth adapter is enabled. Provider
-credentials are configured as secret references and are not included in public
+Production requires `RELAY_AUTH_ADAPTER=production` and a `RELAY_AUTH_MODULE`
+that exports `authAdapter.authenticate(authorization, tenantHeader)`. The
+adapter is responsible for returning verified actor, tenant, and scopes;
+development bearer tokens are rejected in production. Provider credentials are
+configured as secret references and are not included in public
 configuration exports, audit events, usage records, or test fixtures.
 
 When `RELAY_DATABASE_URL` is set, the API uses PostgreSQL-backed route, usage,

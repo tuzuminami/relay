@@ -1,7 +1,119 @@
 openapi: 3.1.0
 info:
   title: RELAY API
-  version: 0.1.0
+  version: 0.2.0
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    TenantId:
+      name: X-Tenant-Id
+      in: header
+      required: true
+      schema:
+        type: string
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema:
+        type: string
+  schemas:
+    RouteResolutionEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [allowed, reasonCodes]
+          properties:
+            allowed:
+              type: boolean
+            reasonCodes:
+              type: array
+              items:
+                type: string
+            route:
+              type: object
+              properties:
+                routeId:
+                  type: string
+                providerId:
+                  type: string
+                model:
+                  type: string
+                requiredCapabilities:
+                  type: array
+                  items:
+                    type: string
+                maxCostCents:
+                  type: integer
+            provider:
+              type: object
+              properties:
+                providerId:
+                  type: string
+                adapterType:
+                  type: string
+                  enum: [openai-compatible]
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+        meta:
+          type: object
+    ProviderValidationEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [valid, reasonCodes, providerId, capabilities]
+          properties:
+            valid:
+              type: boolean
+            reasonCodes:
+              type: array
+              items:
+                type: string
+            providerId:
+              type: string
+            capabilities:
+              type: array
+              items:
+                type: string
+        meta:
+          type: object
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details, correlationId]
+          properties:
+            code:
+              type: string
+              enum:
+                - AUTHENTICATION_REQUIRED
+                - TENANT_SCOPE_DENIED
+                - VALIDATION_FAILED
+                - IDEMPOTENCY_CONFLICT
+                - IDEMPOTENCY_IN_PROGRESS
+                - IDEMPOTENCY_FAILED
+                - CONFIGURATION_INVALID
+                - DEPENDENCY_UNAVAILABLE
+                - POLICY_BLOCKED
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: string
+            correlationId:
+              type: string
 paths:
   /health:
     get:
@@ -15,7 +127,12 @@ paths:
           description: Service readiness.
   /v1/routes/resolve:
     get:
+      security:
+        - bearerAuth: []
+      description: Route resolution is a dry-run and never calls a provider.
       parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/CorrelationId"
         - name: purpose
           in: query
           required: true
@@ -40,11 +157,23 @@ paths:
       responses:
         "200":
           description: A compliant route was found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteResolutionEnvelope"
         "403":
-          description: No compliant route is available.
+          description: No compliant route is available; response remains a dry-run route resolution envelope with allowed=false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteResolutionEnvelope"
   /v1/chat/completions:
     post:
+      security:
+        - bearerAuth: []
       parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/CorrelationId"
         - name: Idempotency-Key
           in: header
           required: true
@@ -61,21 +190,85 @@ paths:
           description: Normalized chat completion response.
         "401":
           description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "403":
           description: Tenant or route policy denied the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "422":
           description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Idempotency-Key conflict, in-progress request, or failed prior attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              examples:
+                conflict:
+                  value:
+                    error:
+                      code: IDEMPOTENCY_CONFLICT
+                      message: Idempotency key was already used with a different request.
+                      details: []
+                      correlationId: corr_demo
+                inProgress:
+                  value:
+                    error:
+                      code: IDEMPOTENCY_IN_PROGRESS
+                      message: Idempotency key is already processing this request.
+                      details: []
+                      correlationId: corr_demo
+                failed:
+                  value:
+                    error:
+                      code: IDEMPOTENCY_FAILED
+                      message: Idempotency key is associated with a failed prior attempt.
+                      details: []
+                      correlationId: corr_demo
+        "503":
+          description: Provider or runtime dependency failed safely without exposing secrets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/usage:
     get:
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/CorrelationId"
       responses:
         "200":
           description: Usage records for the authenticated tenant.
         "401":
           description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "403":
           description: Tenant scope denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/providers/validate:
     post:
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/CorrelationId"
       requestBody:
         required: true
         content:
@@ -85,5 +278,27 @@ paths:
       responses:
         "200":
           description: Provider configuration is valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderValidationEnvelope"
+        "401":
+          description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Tenant scope denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "422":
-          description: Provider configuration is invalid.
+          description: Provider configuration is invalid, or the request body is malformed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProviderValidationEnvelope"
+                  - $ref: "#/components/schemas/ErrorEnvelope"
