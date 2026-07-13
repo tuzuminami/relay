@@ -31,6 +31,19 @@ export interface ChatCompletionRequest {
   readonly toolsStarted?: boolean;
 }
 
+export interface VeilEnforcementContext {
+  readonly token: string;
+}
+
+export interface VerifiedVeilDecision {
+  readonly decisionId: string;
+  readonly tenantId: string;
+  readonly requestedAction: "model_call" | "tool_call";
+  readonly inputHash: string;
+  readonly policyHash: string;
+  readonly expiresAt: Date;
+}
+
 export interface ChatCompletionResponse {
   readonly id: string;
   readonly model: string;

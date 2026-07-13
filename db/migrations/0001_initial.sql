@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS relay_usage_records (
 
 CREATE TABLE IF NOT EXISTS relay_idempotency_records (
   tenant_id text NOT NULL,
+  actor_id text NOT NULL,
   idempotency_key text NOT NULL,
   request_hash text NOT NULL,
   status text NOT NULL DEFAULT 'in_progress',
@@ -98,8 +99,19 @@ CREATE TABLE IF NOT EXISTS relay_idempotency_records (
   completed_at timestamptz,
   CONSTRAINT relay_idempotency_status_check
     CHECK (status IN ('in_progress', 'completed', 'failed')),
-  PRIMARY KEY (tenant_id, idempotency_key)
+  PRIMARY KEY (tenant_id, actor_id, idempotency_key)
 );
+
+CREATE TABLE IF NOT EXISTS relay_veil_decision_replays (
+  tenant_id text NOT NULL,
+  decision_id text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  claimed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, decision_id)
+);
+
+CREATE INDEX IF NOT EXISTS relay_veil_decision_replays_expires_at_idx
+  ON relay_veil_decision_replays (expires_at);
 
 ALTER TABLE relay_idempotency_records
   ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'completed';
@@ -112,6 +124,16 @@ ALTER TABLE relay_idempotency_records
 
 ALTER TABLE relay_idempotency_records
   ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+
+ALTER TABLE relay_idempotency_records
+  ADD COLUMN IF NOT EXISTS actor_id text NOT NULL DEFAULT '__legacy_unbound__';
+
+ALTER TABLE relay_idempotency_records
+  DROP CONSTRAINT IF EXISTS relay_idempotency_records_pkey;
+
+ALTER TABLE relay_idempotency_records
+  ADD CONSTRAINT relay_idempotency_records_pkey
+    PRIMARY KEY (tenant_id, actor_id, idempotency_key);
 
 ALTER TABLE relay_idempotency_records
   DROP CONSTRAINT IF EXISTS relay_idempotency_status_check;

@@ -1,5 +1,5 @@
 import { RelayError } from "../../core/src/errors.ts";
-import type { AuditLog, CompletionRecorder, IdempotencyStore, RouteCatalog, UsageRepository } from "../../core/src/ports.ts";
+import type { AuditLog, CompletionRecorder, IdempotencyReservation, IdempotencyStore, RouteCatalog, UsageRepository, VeilDecisionClaim, VeilDecisionReplayStore } from "../../core/src/ports.ts";
 import type { AuditEvent, ChatCompletionResponse, ModelRoute, ProviderConfig, UsageRecord } from "../../core/src/types.ts";
 
 export interface PgQueryResult<Row extends Record<string, unknown> = Record<string, unknown>> {
@@ -63,7 +63,7 @@ interface IdempotencyRow extends Record<string, unknown> {
   readonly status: "in_progress" | "completed" | "failed";
 }
 
-export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageRepository, IdempotencyStore, CompletionRecorder {
+export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageRepository, IdempotencyStore, CompletionRecorder, VeilDecisionReplayStore {
   private readonly pool: PgPoolLike;
 
   constructor(pool: PgPoolLike) {
@@ -117,20 +117,20 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     return result.rows.map(usageFromRow);
   }
 
-  async get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
-    const record = await this.lookup(tenantId, key);
+  async get(tenantId: string, actorId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
+    const record = await this.lookup(tenantId, actorId, key);
     if (record === undefined || record.status !== "completed") {
       return undefined;
     }
     return { requestHash: record.requestHash, response: record.response };
   }
 
-  async lookup(tenantId: string, key: string) {
+  async lookup(tenantId: string, actorId: string, key: string) {
     const result = await this.pool.query<IdempotencyRow>(
       `SELECT request_hash, response_json, status
          FROM relay_idempotency_records
-        WHERE tenant_id = $1 AND idempotency_key = $2`,
-      [tenantId, key],
+        WHERE tenant_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
+      [tenantId, actorId, key],
     );
     const row = result.rows[0];
     if (row === undefined) {
@@ -145,55 +145,72 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     return { status: "in_progress" as const, requestHash: row.request_hash };
   }
 
-  async reserve(tenantId: string, key: string, requestHash: string) {
-    const insert = await this.pool.query(
-      `INSERT INTO relay_idempotency_records
-        (tenant_id, idempotency_key, request_hash, status)
-       VALUES ($1, $2, $3, 'in_progress')
-       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
-      [tenantId, key, requestHash],
-    );
-    if (insert.rowCount === 1) {
-      return { status: "reserved" as const };
-    }
-
-    const result = await this.pool.query<IdempotencyRow>(
-      `SELECT request_hash, response_json, status
-         FROM relay_idempotency_records
-        WHERE tenant_id = $1 AND idempotency_key = $2`,
-      [tenantId, key],
-    );
-    const row = result.rows[0];
-    if (row === undefined) {
-      return { status: "conflict" as const, requestHash: "" };
-    }
-    if (row.request_hash !== requestHash) {
-      return { status: "conflict" as const, requestHash: row.request_hash };
-    }
-    if (row.status === "completed" && row.response_json !== null) {
-      return { status: "completed" as const, requestHash: row.request_hash, response: row.response_json };
-    }
-    if (row.status === "failed") {
-      return { status: "failed" as const, requestHash: row.request_hash };
-    }
-    return { status: "in_progress" as const, requestHash: row.request_hash };
+  async reserve(tenantId: string, actorId: string, key: string, requestHash: string) {
+    return reserveIdempotency(this.pool, { tenantId, actorId, key, requestHash });
   }
 
-  async fail(tenantId: string, key: string, requestHash: string): Promise<void> {
+  async reserveWithVeilDecision(input: {
+    readonly tenantId: string;
+    readonly actorId: string;
+    readonly key: string;
+    readonly requestHash: string;
+    readonly decision: VeilDecisionClaim;
+  }): Promise<IdempotencyReservation | { readonly status: "replayed" }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (!await claimVeilDecision(client, input.decision)) {
+        await client.query("ROLLBACK");
+        return { status: "replayed" };
+      }
+      const reservation = await reserveIdempotency(client, input);
+      if (reservation.status !== "reserved") {
+        await client.query("ROLLBACK");
+        return reservation;
+      }
+      await client.query("COMMIT");
+      return reservation;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async fail(tenantId: string, actorId: string, key: string, requestHash: string): Promise<void> {
     await this.pool.query(
       `UPDATE relay_idempotency_records
           SET status = 'failed',
               completed_at = COALESCE(completed_at, now())
         WHERE tenant_id = $1
-          AND idempotency_key = $2
-          AND request_hash = $3
+          AND actor_id = $2
+          AND idempotency_key = $3
+          AND request_hash = $4
           AND status = 'in_progress'`,
-      [tenantId, key, requestHash],
+      [tenantId, actorId, key, requestHash],
     );
+  }
+
+  async cancel(tenantId: string, actorId: string, key: string, requestHash: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM relay_idempotency_records
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND idempotency_key = $3
+          AND request_hash = $4
+          AND status = 'in_progress'`,
+      [tenantId, actorId, key, requestHash],
+    );
+  }
+
+  async claim(input: VeilDecisionClaim): Promise<boolean> {
+    return claimVeilDecision(this.pool, input);
   }
 
   async recordCompletion(input: {
     readonly tenantId: string;
+    readonly actorId: string;
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly response: ChatCompletionResponse;
@@ -203,7 +220,7 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await completeIdempotency(client, input.tenantId, input.idempotencyKey, input.requestHash, input.response);
+      await completeIdempotency(client, input.tenantId, input.actorId, input.idempotencyKey, input.requestHash, input.response);
       await insertUsage(client, input.usage);
       await insertAudit(client, input.audit);
       await client.query("COMMIT");
@@ -216,23 +233,83 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
   }
 }
 
+async function reserveIdempotency(
+  queryable: PgQueryable,
+  input: { readonly tenantId: string; readonly actorId: string; readonly key: string; readonly requestHash: string },
+): Promise<IdempotencyReservation> {
+  const insert = await queryable.query(
+    `INSERT INTO relay_idempotency_records
+      (tenant_id, actor_id, idempotency_key, request_hash, status)
+     VALUES ($1, $2, $3, $4, 'in_progress')
+     ON CONFLICT (tenant_id, actor_id, idempotency_key) DO NOTHING`,
+    [input.tenantId, input.actorId, input.key, input.requestHash],
+  );
+  if (insert.rowCount === 1) {
+    return { status: "reserved" as const };
+  }
+
+  const result = await queryable.query<IdempotencyRow>(
+    `SELECT request_hash, response_json, status
+       FROM relay_idempotency_records
+      WHERE tenant_id = $1 AND actor_id = $2 AND idempotency_key = $3`,
+    [input.tenantId, input.actorId, input.key],
+  );
+  const row = result.rows[0];
+  if (row === undefined) {
+    return { status: "conflict" as const, requestHash: "" };
+  }
+  if (row.request_hash !== input.requestHash) {
+    return { status: "conflict" as const, requestHash: row.request_hash };
+  }
+  if (row.status === "completed" && row.response_json !== null) {
+    return { status: "completed" as const, requestHash: row.request_hash, response: row.response_json };
+  }
+  if (row.status === "failed") {
+    return { status: "failed" as const, requestHash: row.request_hash };
+  }
+  return { status: "in_progress" as const, requestHash: row.request_hash };
+}
+
+async function claimVeilDecision(queryable: PgQueryable, input: VeilDecisionClaim): Promise<boolean> {
+  await queryable.query(
+    `DELETE FROM relay_veil_decision_replays
+      WHERE ctid IN (
+        SELECT ctid
+          FROM relay_veil_decision_replays
+         WHERE expires_at <= $1
+         ORDER BY expires_at ASC
+         LIMIT 500
+      )`,
+    [input.now],
+  );
+  const result = await queryable.query(
+    `INSERT INTO relay_veil_decision_replays (tenant_id, decision_id, expires_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, decision_id) DO NOTHING`,
+    [input.tenantId, input.decisionId, input.expiresAt],
+  );
+  return result.rowCount === 1;
+}
+
 async function completeIdempotency(
   queryable: PgQueryable,
   tenantId: string,
+  actorId: string,
   idempotencyKey: string,
   requestHash: string,
   response: ChatCompletionResponse,
 ): Promise<void> {
   const result = await queryable.query(
     `UPDATE relay_idempotency_records
-        SET response_json = $4::jsonb,
+        SET response_json = $5::jsonb,
             status = 'completed',
             completed_at = COALESCE(completed_at, now())
       WHERE tenant_id = $1
-        AND idempotency_key = $2
-        AND request_hash = $3
+        AND actor_id = $2
+        AND idempotency_key = $3
+        AND request_hash = $4
         AND status = 'in_progress'`,
-    [tenantId, idempotencyKey, requestHash, response],
+    [tenantId, actorId, idempotencyKey, requestHash, response],
   );
   if (result.rowCount !== 1) {
     throw new RelayError("IDEMPOTENCY_CONFLICT", "Idempotency key was already recorded.", 409);

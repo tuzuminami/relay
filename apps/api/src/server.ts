@@ -5,12 +5,14 @@ import { RelayError } from "../../../packages/core/src/errors.ts";
 import { allowedOriginsFromEnvironment, canonicalProviderOrigin, isProductionRuntime, providerBaseUrlRejectionReasons, type ProviderEgressPolicy } from "../../../packages/core/src/provider-url.ts";
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
-import { defaultProviderConfig, defaultRoute, FixedClock, InMemoryRelayStore, InMemoryUsageRepository, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver } from "../../../packages/adapters/src/index.ts";
+import { createRemoteVeilDecisionVerifier, defaultProviderConfig, defaultRoute, InMemoryRelayStore, InMemoryUsageRepository, InMemoryVeilDecisionReplayStore, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver, SystemClock } from "../../../packages/adapters/src/index.ts";
 import { buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
   const providerSecret = resolveProviderSecret();
   const providerEgressPolicy = runtimeProviderEgressPolicy();
+  const veilDecisionVerifier = runtimeVeilDecisionVerifier();
+  const veilVerifierPort = veilDecisionVerifier === undefined ? {} : { veilDecisionVerifier };
   if (process.env.RELAY_DATABASE_URL !== undefined) {
     const pool = new Pool({
       connectionString: process.env.RELAY_DATABASE_URL,
@@ -28,9 +30,11 @@ export function buildDefaultService(): RelayService {
       usage: store,
       idempotency: store,
       completions: store,
-      clock: new FixedClock(new Date()),
+      clock: new SystemClock(),
       ids: new SequentialIdGenerator(),
       providerEgressPolicy,
+      ...veilVerifierPort,
+      veilDecisionReplay: store,
     });
   }
   const provider = defaultProviderConfig();
@@ -47,10 +51,42 @@ export function buildDefaultService(): RelayService {
     usage: new InMemoryUsageRepository(store),
     idempotency: store,
     completions: store,
-    clock: new FixedClock(new Date()),
+    clock: new SystemClock(),
     ids: new SequentialIdGenerator(),
     providerEgressPolicy,
+    ...veilVerifierPort,
+    veilDecisionReplay: new InMemoryVeilDecisionReplayStore(),
   });
+}
+
+function runtimeVeilDecisionVerifier() {
+  const issuer = process.env.RELAY_VEIL_ISSUER;
+  const audience = process.env.RELAY_VEIL_AUDIENCE;
+  const jwksUrl = process.env.RELAY_VEIL_JWKS_URL;
+  const configured = [issuer, audience, jwksUrl].filter((value) => value !== undefined && value.length > 0).length;
+  if (configured !== 0 && configured !== 3) {
+    throw new RelayError("CONFIGURATION_INVALID", "RELAY_VEIL_ISSUER, RELAY_VEIL_AUDIENCE, and RELAY_VEIL_JWKS_URL must be configured together.", 503);
+  }
+  if (isProductionRuntime() && configured !== 3) {
+    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_VEIL_ISSUER, RELAY_VEIL_AUDIENCE, and RELAY_VEIL_JWKS_URL.", 503);
+  }
+  if (isProductionRuntime() && process.env.RELAY_DATABASE_URL === undefined) {
+    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_DATABASE_URL for persistent VEIL decision replay protection.", 503);
+  }
+  if (configured === 3) {
+    let url: URL;
+    try {
+      url = new URL(jwksUrl!);
+    } catch {
+      throw new RelayError("CONFIGURATION_INVALID", "RELAY_VEIL_JWKS_URL must be a valid URL.", 503);
+    }
+    if (isProductionRuntime() && url.protocol !== "https:") {
+      throw new RelayError("CONFIGURATION_INVALID", "Production requires an HTTPS RELAY_VEIL_JWKS_URL.", 503);
+    }
+  }
+  return configured === 3
+    ? createRemoteVeilDecisionVerifier({ issuer: issuer!, audience: audience!, jwksUrl: jwksUrl! })
+    : undefined;
 }
 
 export function runtimeProviderEgressPolicy(): ProviderEgressPolicy {
@@ -101,7 +137,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, service:
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
     const body = parseChatCompletionRequest(await readJson(req));
     const idempotencyKey = singleHeader(req.headers["idempotency-key"]) ?? "";
-    const response = await service.completeChat(ctx, body, idempotencyKey);
+    const token = singleHeader(req.headers["x-veil-enforcement"]);
+    const response = await service.completeChat(ctx, body, idempotencyKey, token === undefined ? undefined : { token });
     writeJson(res, 200, { data: response, meta: meta(req, ctx.correlationId) });
     return;
   }

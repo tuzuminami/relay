@@ -70,6 +70,7 @@ trying to compete as a general-purpose inference gateway.
 - Secret references resolved only at the adapter boundary
 - Append-only audit and usage records
 - Idempotency for chat completion writes
+- VEIL EdDSA decision enforcement before every provider call
 - Bounded timeout handling for OpenAI-compatible provider calls
 - Public private-boundary guard for tracked and staged files
 
@@ -121,6 +122,7 @@ curl -s "http://127.0.0.1:8787/v1/chat/completions" \
   -H "Authorization: Bearer dev:actor_1:tenant_demo:relay:invoke" \
   -H "X-Tenant-Id: tenant_demo" \
   -H "Idempotency-Key: idem_demo_1" \
+  -H "X-VEIL-Enforcement: <short-lived-VEIL-JWS>" \
   -d '{
     "model": "local-demo",
     "purpose": "chat",
@@ -145,6 +147,47 @@ to a comma-separated list of exact HTTPS origins (for example,
 `https://api.openai.com`). RELAY rejects provider URLs outside that allowlist,
 non-HTTPS URLs, redirects, loopback/private/link-local/metadata targets, and
 numeric or IPv6 host forms. Provider secrets are resolved only after this check.
+
+### VEIL Enforcement
+
+Every `POST /v1/chat/completions` requires an `X-VEIL-Enforcement` header. The
+value is a short-lived EdDSA JWS issued by VEIL. RELAY verifies the configured
+issuer, audience, tenant, `action=ALLOW`, `requested_action=model_call`, expiry,
+decision id, policy hash, and a hash of the exact request before it resolves a
+provider or resolves a provider secret. A verified decision is accepted once per
+tenant.
+
+Configure the verifier with all three values together:
+
+```bash
+export RELAY_VEIL_ISSUER=https://veil.example.com
+export RELAY_VEIL_AUDIENCE=relay-api
+export RELAY_VEIL_JWKS_URL=https://veil.example.com/.well-known/jwks.json
+```
+
+The JWKS endpoint supports VEIL key rotation. RELAY uses a bounded remote JWKS
+cache, accepts tokens no older than five minutes, caps replay retention to the same window, and rejects an unavailable or unknown signing key. Production also requires
+`RELAY_DATABASE_URL` so decision replay protection is shared across instances.
+To issue a matching VEIL decision, send VEIL this exact policy input shape:
+
+```text
+input: { messages, purpose, requestedModel: model, requiredCapabilities, maxCostCents, toolsStarted? }
+type: model_call
+agent: { id: authenticated actor id }
+resource: { id: relay.chat.completion, type: ai-operation, classification: dataClassification }
+dataClassification: request dataClassification
+model: { provider: resolved providerId, id: resolved route model }
+estimatedCost: request maxCostCents
+attributes: { purpose, requiredCapabilities, route: { routeId, providerId, model } }
+```
+
+First call `GET /v1/routes/resolve`, then issue the VEIL decision for the returned
+route and send the exact same `model` to RELAY. RELAY resolves again and rejects
+a route/provider/model change before provider I/O. The resulting VEIL enforcement token is request-specific. Mismatched, expired,
+replayed, or forged tokens fail closed with a `VEIL_DECISION_*` error and no
+provider I/O. A completed idempotency retry also needs a fresh VEIL decision;
+RELAY returns the stored result without another provider call only after that
+new decision verifies.
 
 When `RELAY_DATABASE_URL` is set, the API uses PostgreSQL-backed route, usage,
 audit, and idempotency adapters. Without it, the API uses in-memory development

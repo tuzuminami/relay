@@ -179,6 +179,15 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-VEIL-Enforcement
+          in: header
+          required: true
+          description: >-
+            A short-lived EdDSA JWS issued by VEIL for this exact model_call.
+            RELAY verifies issuer, audience, tenant, action, request hash, expiry,
+            and one-time decision use before provider I/O.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -195,7 +204,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "403":
-          description: Tenant or route policy denied the request.
+          description: >-
+            Tenant or route policy denied the request, or VEIL enforcement was
+            missing, invalid, expired, mismatched, or replayed. Error codes are
+            VEIL_DECISION_REQUIRED, VEIL_DECISION_INVALID, and VEIL_DECISION_REPLAYED.
           content:
             application/json:
               schema:

@@ -7,7 +7,10 @@ export type RelayErrorCode =
   | "IDEMPOTENCY_FAILED"
   | "CONFIGURATION_INVALID"
   | "DEPENDENCY_UNAVAILABLE"
-  | "POLICY_BLOCKED";
+  | "POLICY_BLOCKED"
+  | "VEIL_DECISION_REQUIRED"
+  | "VEIL_DECISION_INVALID"
+  | "VEIL_DECISION_REPLAYED";
 
 export class RelayError extends Error {
   readonly code: RelayErrorCode;

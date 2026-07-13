@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { RelayError, validationFailed } from "./errors.ts";
-import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, UsageRepository } from "./ports.ts";
+import type { AuditLog, Clock, CompletionRecorder, IdGenerator, IdempotencyStore, ProviderAdapter, RouteCatalog, UsageRepository, VeilDecisionReplayStore, VeilDecisionVerifier } from "./ports.ts";
 import { providerAddressRejectionReasons, providerBaseUrlRejectionReasons, systemProviderAddressResolver, type ProviderAddressResolver, type ProviderEgressPolicy } from "./provider-url.ts";
 import { assertRouteAllowed, resolveRoute } from "./route-policy.ts";
-import type { ChatCompletionRequest, ChatCompletionResponse, ProviderConfig, ProviderValidationRequest, ProviderValidationResult, RequestContext, RouteResolution, UsageRecord } from "./types.ts";
+import type { ChatCompletionRequest, ChatCompletionResponse, ModelRoute, ProviderConfig, ProviderValidationRequest, ProviderValidationResult, RequestContext, RouteResolution, UsageRecord, VeilEnforcementContext } from "./types.ts";
+
+const MAX_VEIL_DECISION_AGE_MS = 5 * 60 * 1_000;
 
 export interface RelayServicePorts {
   readonly routes: RouteCatalog;
@@ -16,6 +18,8 @@ export interface RelayServicePorts {
   readonly ids: IdGenerator;
   readonly providerEgressPolicy?: ProviderEgressPolicy;
   readonly providerAddressResolver?: ProviderAddressResolver;
+  readonly veilDecisionVerifier?: VeilDecisionVerifier;
+  readonly veilDecisionReplay?: VeilDecisionReplayStore;
 }
 
 export class RelayService {
@@ -32,23 +36,61 @@ export class RelayService {
     return resolveRoute(ctx.auth.tenantId, request, routes, providers);
   }
 
-  async completeChat(ctx: RequestContext, request: ChatCompletionRequest, idempotencyKey: string): Promise<ChatCompletionResponse> {
+  async completeChat(ctx: RequestContext, request: ChatCompletionRequest, idempotencyKey: string, enforcement?: VeilEnforcementContext): Promise<ChatCompletionResponse> {
     assertTenantScope(ctx);
     if (idempotencyKey.length === 0) {
       throw validationFailed(["Idempotency-Key header is required"]);
     }
 
-    const requestHash = hashRequest(request);
-    const previous = await this.ports.idempotency.lookup(ctx.auth.tenantId, idempotencyKey);
-    const previousResponse = responseFromIdempotencyState(previous, requestHash);
-    if (previousResponse !== undefined) {
-      return previousResponse;
-    }
-
+    const requestHash = hashRequest(ctx, request);
     const resolution = await this.resolve(ctx, request);
     assertRouteAllowed(resolution);
-    const reservation = await this.ports.idempotency.reserve(ctx.auth.tenantId, idempotencyKey, requestHash);
+    if (resolution.route.model !== request.model) {
+      throw new RelayError("POLICY_BLOCKED", "Requested model does not match the compliant route.", 403, ["MODEL_MISMATCH"]);
+    }
+
+    if (enforcement === undefined || this.ports.veilDecisionVerifier === undefined || this.ports.veilDecisionReplay === undefined) {
+      throw new RelayError("VEIL_DECISION_REQUIRED", "A verified VEIL decision is required before provider I/O.", 403);
+    }
+    const decisionNow = this.ports.clock.now();
+    const verifiedDecision = await this.ports.veilDecisionVerifier.verify({
+      token: enforcement.token,
+      tenantId: ctx.auth.tenantId,
+      requestedAction: "model_call",
+      inputHash: computeRelayVeilInputHash(ctx, request, resolution),
+      now: decisionNow,
+    });
+    const previous = await this.ports.idempotency.lookup(ctx.auth.tenantId, ctx.auth.actorId, idempotencyKey);
+    const previousResponse = responseFromIdempotencyState(previous, requestHash);
+    if (previousResponse !== undefined) {
+      if (!await this.ports.veilDecisionReplay.claim({
+        tenantId: ctx.auth.tenantId,
+        decisionId: verifiedDecision.decisionId,
+        expiresAt: replayExpiry(verifiedDecision.expiresAt, decisionNow),
+        now: decisionNow,
+      })) {
+        throw new RelayError("VEIL_DECISION_REPLAYED", "VEIL decision was already used.", 403);
+      }
+      return previousResponse;
+    }
+    const decisionClaim = {
+      tenantId: ctx.auth.tenantId,
+      decisionId: verifiedDecision.decisionId,
+      expiresAt: replayExpiry(verifiedDecision.expiresAt, decisionNow),
+      now: decisionNow,
+    };
+    const reservation = this.ports.idempotency.reserveWithVeilDecision === undefined
+      ? await this.ports.idempotency.reserve(ctx.auth.tenantId, ctx.auth.actorId, idempotencyKey, requestHash)
+      : await this.ports.idempotency.reserveWithVeilDecision({
+        tenantId: ctx.auth.tenantId,
+        actorId: ctx.auth.actorId,
+        key: idempotencyKey,
+        requestHash,
+        decision: decisionClaim,
+      });
     switch (reservation.status) {
+      case "replayed":
+        throw new RelayError("VEIL_DECISION_REPLAYED", "VEIL decision was already used.", 403);
       case "completed":
         return reservation.response;
       case "conflict":
@@ -71,6 +113,17 @@ export class RelayService {
         );
       case "reserved":
         break;
+    }
+
+    if (this.ports.idempotency.reserveWithVeilDecision === undefined) {
+      try {
+        if (!await this.ports.veilDecisionReplay.claim(decisionClaim)) {
+          throw new RelayError("VEIL_DECISION_REPLAYED", "VEIL decision was already used.", 403);
+        }
+      } catch (error) {
+        await this.ports.idempotency.cancel(ctx.auth.tenantId, ctx.auth.actorId, idempotencyKey, requestHash);
+        throw error;
+      }
     }
 
     try {
@@ -121,11 +174,14 @@ export class RelayService {
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
           estimatedCostCents: response.usage.estimatedCostCents,
+          veilDecisionId: verifiedDecision.decisionId,
+          veilPolicyHash: verifiedDecision.policyHash,
         },
         createdAt: this.ports.clock.now(),
       };
       await this.ports.completions.recordCompletion({
         tenantId: ctx.auth.tenantId,
+        actorId: ctx.auth.actorId,
         idempotencyKey,
         requestHash,
         response,
@@ -135,7 +191,7 @@ export class RelayService {
       return response;
     } catch (error) {
       try {
-        await this.ports.idempotency.fail(ctx.auth.tenantId, idempotencyKey, requestHash);
+        await this.ports.idempotency.fail(ctx.auth.tenantId, ctx.auth.actorId, idempotencyKey, requestHash);
       } catch {
         // Preserve the original provider or persistence failure for callers.
       }
@@ -199,6 +255,10 @@ export class RelayService {
   }
 }
 
+function replayExpiry(tokenExpiry: Date, now: Date): Date {
+  return new Date(Math.min(tokenExpiry.getTime(), now.getTime() + MAX_VEIL_DECISION_AGE_MS));
+}
+
 function responseFromIdempotencyState(
   state: Awaited<ReturnType<IdempotencyStore["lookup"]>>,
   requestHash: string,
@@ -230,8 +290,38 @@ function responseFromIdempotencyState(
   );
 }
 
-function hashRequest(request: ChatCompletionRequest): string {
-  return createHash("sha256").update(stableStringify(request)).digest("hex");
+function hashRequest(ctx: RequestContext, request: ChatCompletionRequest): string {
+  return createHash("sha256").update(stableStringify({ actorId: ctx.auth.actorId, request })).digest("hex");
+}
+
+export function computeRelayVeilInputHash(
+  ctx: RequestContext,
+  request: ChatCompletionRequest,
+  resolution: RouteResolution & { readonly route: ModelRoute; readonly provider: ProviderConfig },
+): string {
+  return createHash("sha256").update(stableStringify({
+    messages: request.messages,
+    purpose: request.purpose,
+    requestedModel: request.model,
+    requiredCapabilities: request.requiredCapabilities,
+    maxCostCents: request.maxCostCents,
+    ...(request.toolsStarted === undefined ? {} : { toolsStarted: request.toolsStarted }),
+    type: "model_call",
+    agent: { id: ctx.auth.actorId },
+    resource: { id: "relay.chat.completion", type: "ai-operation", classification: request.dataClassification },
+    dataClassification: request.dataClassification,
+    model: { provider: resolution.provider.providerId, id: resolution.route.model },
+    estimatedCost: request.maxCostCents,
+    attributes: {
+      purpose: request.purpose,
+      requiredCapabilities: request.requiredCapabilities,
+      route: {
+        routeId: resolution.route.routeId,
+        providerId: resolution.provider.providerId,
+        model: resolution.route.model,
+      },
+    }
+  })).digest("hex");
 }
 
 function stableStringify(value: unknown): string {
