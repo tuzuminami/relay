@@ -6,7 +6,7 @@ import { allowedOriginsFromEnvironment, canonicalProviderOrigin, isProductionRun
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
 import { createRemoteVeilDecisionVerifier, defaultProviderConfig, defaultRoute, InMemoryRelayStore, InMemoryUsageRepository, InMemoryVeilDecisionReplayStore, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver, SystemClock } from "../../../packages/adapters/src/index.ts";
-import { buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
+import { authenticateRequest, buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
   const providerSecret = resolveProviderSecret();
@@ -119,7 +119,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, service:
     return;
   }
 
-  const auth = authAdapter.authenticate(singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]));
+  const auth = await authenticateRequest(authAdapter, singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]));
   const ctx = {
     auth,
     requestId: randomUUID(),

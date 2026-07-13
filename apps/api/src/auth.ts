@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export interface AuthAdapter {
-  authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext;
+  authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext | Promise<AuthContext>;
 }
 
 export class DevelopmentAuthAdapter implements AuthAdapter {
@@ -41,8 +41,21 @@ export class DevelopmentAuthAdapter implements AuthAdapter {
   }
 }
 
-export function authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext {
-  return buildRuntimeAuthAdapter().authenticate(authorization, tenantHeader);
+export async function authenticate(authorization: string | undefined, tenantHeader: string | undefined): Promise<AuthContext> {
+  return authenticateRequest(buildRuntimeAuthAdapter(), authorization, tenantHeader);
+}
+
+export async function authenticateRequest(
+  authAdapter: AuthAdapter,
+  authorization: string | undefined,
+  tenantHeader: string | undefined,
+): Promise<AuthContext> {
+  try {
+    return validateAuthContext(await authAdapter.authenticate(authorization, tenantHeader), tenantHeader);
+  } catch (error) {
+    if (error instanceof RelayError) throw error;
+    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency is unavailable.", 503, ["auth_adapter_unavailable"], true);
+  }
 }
 
 export function buildRuntimeAuthAdapter(): AuthAdapter {
@@ -80,4 +93,23 @@ export function validateRuntimeAuthMode(): void {
   if (isProductionRuntime() && adapter !== "production") {
     throw new RelayError("CONFIGURATION_INVALID", "Production requires a production auth adapter.", 503);
   }
+}
+
+function validateAuthContext(value: unknown, tenantHeader: string | undefined): AuthContext {
+  if (typeof value !== "object" || value === null) {
+    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency returned an invalid identity.", 503, ["auth_adapter_invalid_response"], true);
+  }
+  const context = value as Partial<AuthContext>;
+  if (
+    typeof context.actorId !== "string" || context.actorId.length === 0 ||
+    typeof context.tenantId !== "string" || context.tenantId.length === 0 ||
+    !Array.isArray(context.scopes) || !context.scopes.every((scope) => typeof scope === "string" && scope.length > 0) ||
+    (context.authAdapter !== "development" && context.authAdapter !== "test" && context.authAdapter !== "production")
+  ) {
+    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency returned an invalid identity.", 503, ["auth_adapter_invalid_response"], true);
+  }
+  if (tenantHeader !== undefined && tenantHeader !== context.tenantId) {
+    throw new RelayError("TENANT_SCOPE_DENIED", "Request cannot access this resource.", 403);
+  }
+  return context as AuthContext;
 }

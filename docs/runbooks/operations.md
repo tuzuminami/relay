@@ -48,3 +48,10 @@ ledger. The runner refuses to use `RELAY_DATABASE_URL` as a production fallback.
 
 The initial migration creates additive tables only. For local development,
 rollback is dropping the RELAY database and recreating it from migrations.
+# Authentication Adapter Availability
+
+Production adapters may resolve identity asynchronously while refreshing JWKS data,
+introspecting a token, or consulting an authorization service. RELAY waits for that
+work before route resolution or provider I/O. Invalid credentials retain their stable
+authentication or tenant-scope error. An adapter dependency failure or malformed identity
+returns `503 DEPENDENCY_UNAVAILABLE` with a secret-safe reason code, and no provider is called.

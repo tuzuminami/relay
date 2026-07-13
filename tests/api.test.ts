@@ -3,11 +3,11 @@ import test from "node:test";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { buildDefaultService, createRelayHttpServer, runtimeProviderEgressPolicy } from "../apps/api/src/server.ts";
-import { loadRuntimeAuthAdapter, validateRuntimeAuthMode } from "../apps/api/src/auth.ts";
+import { loadRuntimeAuthAdapter, validateRuntimeAuthMode, type AuthAdapter } from "../apps/api/src/auth.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
 import { RelayService } from "../packages/core/src/relay-service.ts";
 import { FixedClock, InMemoryRelayStore, InMemoryUsageRepository, SequentialIdGenerator, StubProviderAdapter } from "../packages/adapters/src/in-memory.ts";
-import type { ModelRoute, ProviderConfig } from "../packages/core/src/types.ts";
+import type { AuthContext, ModelRoute, ProviderConfig } from "../packages/core/src/types.ts";
 
 const apiProvider: ProviderConfig = {
   tenantId: "tenant_a",
@@ -49,8 +49,8 @@ function buildApiFixture() {
   return { adapter, service, store };
 }
 
-async function withRelayServer<T>(service: RelayService, run: (port: number) => Promise<T>): Promise<T> {
-  const server = createRelayHttpServer(service);
+async function withRelayServer<T>(service: RelayService, run: (port: number) => Promise<T>, authAdapter?: AuthAdapter): Promise<T> {
+  const server = createRelayHttpServer(service, authAdapter);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -328,6 +328,79 @@ test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
     });
     assert.equal(denied.status, 403);
   });
+});
+
+test("TEST-AUTH-003 awaits a production authentication adapter before route resolution", async () => {
+  const { service, adapter } = buildApiFixture();
+  const asyncAuthAdapter: AuthAdapter = {
+    async authenticate(): Promise<AuthContext> {
+      await Promise.resolve();
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"], authAdapter: "production" };
+    },
+  };
+
+  await withRelayServer(service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(adapter.calls, 0);
+  }, asyncAuthAdapter);
+});
+
+test("TEST-AUTH-004 rejects authentication failures before provider I/O", async () => {
+  const invalidCredentials = buildApiFixture();
+  const rejectedAdapter: AuthAdapter = {
+    async authenticate() {
+      throw new RelayError("AUTHENTICATION_REQUIRED", "Authentication is required.", 401);
+    },
+  };
+  await withRelayServer(invalidCredentials.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    assert.equal(response.status, 401);
+    assert.equal(invalidCredentials.adapter.calls, 0);
+  }, rejectedAdapter);
+
+  const dependencyFailure = buildApiFixture();
+  const failingAdapter: AuthAdapter = { async authenticate() { throw new Error("jwks unavailable"); } };
+  await withRelayServer(dependencyFailure.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    const payload = await response.json() as { error: { code: string; details: string[] } };
+    assert.equal(response.status, 503);
+    assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.deepEqual(payload.error.details, ["auth_adapter_unavailable"]);
+    assert.equal(dependencyFailure.adapter.calls, 0);
+  }, failingAdapter);
+});
+
+test("TEST-AUTH-005 rejects malformed asynchronous identities before route or provider access", async () => {
+  const fixture = buildApiFixture();
+  const malformedAdapter: AuthAdapter = {
+    async authenticate() {
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: "relay:invoke", authAdapter: "production" } as unknown as AuthContext;
+    },
+  };
+
+  await withRelayServer(fixture.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    const payload = await response.json() as { error: { code: string; details: string[] } };
+    assert.equal(response.status, 503);
+    assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.deepEqual(payload.error.details, ["auth_adapter_invalid_response"]);
+    assert.equal(fixture.adapter.calls, 0);
+  }, malformedAdapter);
 });
 
 test("TEST-API-002 HTTP route dry-run redacts provider secret reference and avoids provider I/O", async () => {
