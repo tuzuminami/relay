@@ -11,6 +11,10 @@ test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors",
   assert.match(openApi, /IDEMPOTENCY_CONFLICT/);
   assert.match(openApi, /IDEMPOTENCY_IN_PROGRESS/);
   assert.match(openApi, /IDEMPOTENCY_FAILED/);
+  assert.match(openApi, /X-VEIL-Enforcement/);
+  assert.match(openApi, /VEIL_DECISION_REQUIRED/);
+  assert.match(openApi, /VEIL_DECISION_INVALID/);
+  assert.match(openApi, /VEIL_DECISION_REPLAYED/);
 });
 
 test("TEST-CONTRACT-002 OpenAPI keeps secret references out of route resolution response", () => {

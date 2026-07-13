@@ -5,11 +5,15 @@ import type { AuditEvent, ChatCompletionResponse, UsageRecord } from "../package
 
 class FakeClient implements PgClientLike {
   readonly queries: { readonly text: string; readonly values: readonly unknown[] }[] = [];
+  replayClaimRowCount = 1;
 
   async query<Row extends Record<string, unknown> = Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<PgQueryResult<Row>> {
     this.queries.push({ text, values });
     if (text.startsWith("INSERT INTO relay_idempotency_records") || text.startsWith("UPDATE relay_idempotency_records")) {
       return { rowCount: 1, rows: [] };
+    }
+    if (text.startsWith("INSERT INTO relay_veil_decision_replays")) {
+      return { rowCount: this.replayClaimRowCount, rows: [] };
     }
     return { rowCount: null, rows: [] };
   }
@@ -72,17 +76,102 @@ test("TEST-DB-003 usage lookup uses tenant_id predicate", async () => {
   assert.deepEqual(query.values, ["tenant_a"]);
 });
 
-test("TEST-DB-004 idempotency lookup uses tenant_id and key predicates", async () => {
+test("TEST-DB-004 idempotency lookup uses tenant_id, actor_id, and key predicates", async () => {
   const pool = new FakePool();
   const store = new PostgresRelayStore(pool);
 
-  await store.get("tenant_a", "idem_1");
+  await store.get("tenant_a", "actor_1", "idem_1");
 
   assert.equal(pool.queries.length, 1);
   const query = pool.queries[0];
   assert.ok(query);
-  assert.match(query.text, /WHERE tenant_id = \$1 AND idempotency_key = \$2/);
-  assert.deepEqual(query.values, ["tenant_a", "idem_1"]);
+  assert.match(query.text, /WHERE tenant_id = \$1 AND actor_id = \$2 AND idempotency_key = \$3/);
+  assert.deepEqual(query.values, ["tenant_a", "actor_1", "idem_1"]);
+});
+
+test("TEST-DB-006 VEIL decision replay claim is tenant-scoped and conflict-safe", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const claimed = await store.claim({ tenantId: "tenant_a", decisionId: "decision_1", expiresAt: new Date("2030-01-01T00:00:00.000Z"), now });
+
+  assert.equal(claimed, false);
+  assert.equal(pool.queries.length, 2);
+  assert.match(pool.queries[0]?.text ?? "", /DELETE FROM relay_veil_decision_replays/);
+  assert.match(pool.queries[0]?.text ?? "", /expires_at <= \$1/);
+  assert.match(pool.queries[0]?.text ?? "", /ORDER BY expires_at ASC/);
+  assert.match(pool.queries[0]?.text ?? "", /LIMIT 500/);
+  assert.deepEqual(pool.queries[0]?.values, [now]);
+  assert.match(pool.queries[1]?.text ?? "", /INSERT INTO relay_veil_decision_replays/);
+  assert.match(pool.queries[1]?.text ?? "", /ON CONFLICT \(tenant_id, decision_id\) DO NOTHING/);
+  assert.deepEqual(pool.queries[1]?.values, ["tenant_a", "decision_1", new Date("2030-01-01T00:00:00.000Z")]);
+});
+
+test("TEST-DB-007 replay rejection cancels only its in-progress idempotency reservation", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+
+  await store.cancel("tenant_a", "actor_1", "idem_1", "hash_1");
+
+  assert.equal(pool.queries.length, 1);
+  assert.match(pool.queries[0]?.text ?? "", /DELETE FROM relay_idempotency_records/);
+  assert.match(pool.queries[0]?.text ?? "", /status = 'in_progress'/);
+  assert.deepEqual(pool.queries[0]?.values, ["tenant_a", "actor_1", "idem_1", "hash_1"]);
+});
+
+test("TEST-DB-008 PostgreSQL claims a VEIL decision and reserves idempotency in one transaction", async () => {
+  const pool = new FakePool();
+  const store = new PostgresRelayStore(pool);
+  const reservation = await store.reserveWithVeilDecision({
+    tenantId: "tenant_a",
+    actorId: "actor_1",
+    key: "idem_1",
+    requestHash: "hash_1",
+    decision: {
+      tenantId: "tenant_a",
+      decisionId: "decision_1",
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    },
+  });
+
+  assert.deepEqual(reservation, { status: "reserved" });
+  const statements = pool.client.queries.map((query) => query.text);
+  assert.deepEqual(statements.slice(0, 6), [
+    "BEGIN",
+    statements[1],
+    statements[2],
+    statements[3],
+    "COMMIT",
+    "RELEASE",
+  ]);
+  assert.match(statements[1] ?? "", /DELETE FROM relay_veil_decision_replays/);
+  assert.match(statements[2] ?? "", /INSERT INTO relay_veil_decision_replays/);
+  assert.match(statements[3] ?? "", /INSERT INTO relay_idempotency_records/);
+});
+
+test("TEST-DB-009 replayed VEIL decisions roll back without reserving idempotency", async () => {
+  const pool = new FakePool();
+  pool.client.replayClaimRowCount = 0;
+  const store = new PostgresRelayStore(pool);
+  const reservation = await store.reserveWithVeilDecision({
+    tenantId: "tenant_a",
+    actorId: "actor_1",
+    key: "idem_1",
+    requestHash: "hash_1",
+    decision: {
+      tenantId: "tenant_a",
+      decisionId: "decision_1",
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    },
+  });
+
+  assert.deepEqual(reservation, { status: "replayed" });
+  const statements = pool.client.queries.map((query) => query.text);
+  assert.equal(statements.includes("ROLLBACK"), true);
+  assert.equal(statements.some((statement) => statement.startsWith("INSERT INTO relay_idempotency_records")), false);
 });
 
 test("TEST-DB-002 completion persistence uses one transaction and records idempotency before evidence", async () => {
@@ -125,6 +214,7 @@ test("TEST-DB-002 completion persistence uses one transaction and records idempo
 
   await store.recordCompletion({
     tenantId: "tenant_a",
+    actorId: "actor_1",
     idempotencyKey: "idem_1",
     requestHash: "hash_1",
     response,

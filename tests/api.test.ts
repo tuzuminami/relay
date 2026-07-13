@@ -43,6 +43,8 @@ function buildApiFixture() {
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
+    veilDecisionVerifier: { verify: async (input) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") }) },
+    veilDecisionReplay: { claim: async () => true },
   });
   return { adapter, service, store };
 }
@@ -73,6 +75,7 @@ function authHeaders(): Record<string, string> {
   return {
     authorization: "Bearer dev:actor_1:tenant_a:relay:invoke",
     "x-tenant-id": "tenant_a",
+    "x-veil-enforcement": "test-verified-decision",
   };
 }
 
@@ -272,6 +275,43 @@ test("TEST-CONFIG-004 unknown runtime and auth modes fail at startup", () => {
   }
 });
 
+test("TEST-CONFIG-005 production requires VEIL verification and persistent replay protection", () => {
+  const keys = [
+    "NODE_ENV",
+    "RELAY_PROVIDER_API_KEY",
+    "RELAY_PROVIDER_ALLOWED_ORIGINS",
+    "RELAY_DATABASE_URL",
+    "RELAY_VEIL_ISSUER",
+    "RELAY_VEIL_AUDIENCE",
+    "RELAY_VEIL_JWKS_URL",
+  ] as const;
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.RELAY_PROVIDER_API_KEY = "sk-test-only";
+    process.env.RELAY_PROVIDER_ALLOWED_ORIGINS = "https://api.openai.com";
+    delete process.env.RELAY_DATABASE_URL;
+    delete process.env.RELAY_VEIL_ISSUER;
+    delete process.env.RELAY_VEIL_AUDIENCE;
+    delete process.env.RELAY_VEIL_JWKS_URL;
+    assert.throws(() => buildDefaultService(), (error) => error instanceof RelayError && error.code === "CONFIGURATION_INVALID");
+
+    process.env.RELAY_VEIL_ISSUER = "https://veil.example.test";
+    process.env.RELAY_VEIL_AUDIENCE = "relay-api";
+    process.env.RELAY_VEIL_JWKS_URL = "https://veil.example.test/.well-known/jwks.json";
+    assert.throws(
+      () => buildDefaultService(),
+      (error) => error instanceof RelayError && error.code === "CONFIGURATION_INVALID" && error.message.includes("RELAY_DATABASE_URL"),
+    );
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
   const { service } = buildApiFixture();
   await withRelayServer(service, async (port) => {
@@ -364,4 +404,20 @@ test("TEST-API-003 HTTP chat idempotency replays response and usage stays redact
     assert.equal(usageBody.includes(rawPrompt), false);
     assert.equal(usageBody.includes("secret://local"), false);
   });
+});
+
+test("TEST-API-005 HTTP chat requires VEIL enforcement before provider I/O", async () => {
+  const { adapter, service } = buildApiFixture();
+  await withRelayServer(service, async (port) => {
+    const { "x-veil-enforcement": _veilEnforcement, ...headers } = authHeaders();
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json", "idempotency-key": "idem_missing_veil" },
+      body: chatBody("hello"),
+    });
+    const payload = await response.json() as { error: { code: string } };
+    assert.equal(response.status, 403);
+    assert.equal(payload.error.code, "VEIL_DECISION_REQUIRED");
+  });
+  assert.equal(adapter.calls, 0);
 });

@@ -56,16 +56,16 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     this.usageRecords.push(record);
   }
 
-  async get(tenantId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
-    const record = await this.lookup(tenantId, key);
+  async get(tenantId: string, actorId: string, key: string): Promise<{ readonly requestHash: string; readonly response: ChatCompletionResponse } | undefined> {
+    const record = await this.lookup(tenantId, actorId, key);
     if (record === undefined || record.status !== "completed") {
       return undefined;
     }
     return { requestHash: record.requestHash, response: record.response };
   }
 
-  async lookup(tenantId: string, key: string) {
-    const record = this.idempotency.get(`${tenantId}:${key}`);
+  async lookup(tenantId: string, actorId: string, key: string) {
+    const record = this.idempotency.get(`${tenantId}:${actorId}:${key}`);
     if (record === undefined) {
       return undefined;
     }
@@ -78,8 +78,8 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     return { status: "in_progress" as const, requestHash: record.requestHash };
   }
 
-  async reserve(tenantId: string, key: string, requestHash: string) {
-    const idempotencyKey = `${tenantId}:${key}`;
+  async reserve(tenantId: string, actorId: string, key: string, requestHash: string) {
+    const idempotencyKey = `${tenantId}:${actorId}:${key}`;
     const record = this.idempotency.get(idempotencyKey);
     if (record === undefined) {
       this.idempotency.set(idempotencyKey, { requestHash, status: "in_progress" });
@@ -97,23 +97,32 @@ export class InMemoryRelayStore implements RouteCatalog, AuditLog, IdempotencySt
     return { status: "in_progress" as const, requestHash: record.requestHash };
   }
 
-  async fail(tenantId: string, key: string, requestHash: string): Promise<void> {
-    const idempotencyKey = `${tenantId}:${key}`;
+  async fail(tenantId: string, actorId: string, key: string, requestHash: string): Promise<void> {
+    const idempotencyKey = `${tenantId}:${actorId}:${key}`;
     const record = this.idempotency.get(idempotencyKey);
     if (record !== undefined && record.requestHash === requestHash && record.status === "in_progress") {
       this.idempotency.set(idempotencyKey, { requestHash, status: "failed" });
     }
   }
 
+  async cancel(tenantId: string, actorId: string, key: string, requestHash: string): Promise<void> {
+    const idempotencyKey = `${tenantId}:${actorId}:${key}`;
+    const record = this.idempotency.get(idempotencyKey);
+    if (record !== undefined && record.requestHash === requestHash && record.status === "in_progress") {
+      this.idempotency.delete(idempotencyKey);
+    }
+  }
+
   async recordCompletion(input: {
     readonly tenantId: string;
+    readonly actorId: string;
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly response: ChatCompletionResponse;
     readonly usage: UsageRecord;
     readonly audit: AuditEvent;
   }): Promise<void> {
-    const key = `${input.tenantId}:${input.idempotencyKey}`;
+    const key = `${input.tenantId}:${input.actorId}:${input.idempotencyKey}`;
     const existing = this.idempotency.get(key);
     if (existing === undefined || existing.requestHash !== input.requestHash || existing.status !== "in_progress") {
       throw new RelayError("IDEMPOTENCY_CONFLICT", "Idempotency key was already recorded.", 409);

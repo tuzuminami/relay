@@ -28,6 +28,17 @@ const route: ModelRoute = {
   enabled: true,
 };
 
+const enforcement = { token: "test-verified-decision" };
+
+function testVeilPorts() {
+  return {
+    veilDecisionVerifier: {
+      verify: async (input: { readonly tenantId: string; readonly requestedAction: "model_call" | "tool_call"; readonly inputHash: string }) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") })
+    },
+    veilDecisionReplay: { claim: async () => true },
+  };
+}
+
 function fixture(providerAddressResolver = { resolve: async () => ["93.184.216.34"] }) {
   const store = new InMemoryRelayStore([route], [provider]);
   const adapter = new StubProviderAdapter();
@@ -41,6 +52,7 @@ function fixture(providerAddressResolver = { resolve: async () => ["93.184.216.3
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
     providerAddressResolver,
+    ...testVeilPorts(),
   });
   const ctx: RequestContext = {
     auth: {
@@ -123,7 +135,7 @@ test("TEST-ROUTE-001 route denial happens before provider call", async () => {
     maxCostCents: 5,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_1"), (error) => {
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_1", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "POLICY_BLOCKED");
     return true;
@@ -143,6 +155,7 @@ test("TEST-ROUTE-002 unknown provider fails closed before provider call", async 
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
+    ...testVeilPorts(),
   });
   const { ctx } = fixture();
   const request = parseChatCompletionRequest({
@@ -154,7 +167,7 @@ test("TEST-ROUTE-002 unknown provider fails closed before provider call", async 
     maxCostCents: 5,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_1"), (error) => {
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_1", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "POLICY_BLOCKED");
     assert.deepEqual(error.details, ["NO_COMPLIANT_ROUTE"]);
@@ -174,7 +187,7 @@ test("TEST-ROUTE-003 missing capability fails closed before provider call", asyn
     maxCostCents: 5,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_1"), RelayError);
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_1", enforcement), RelayError);
   assert.equal(adapter.calls, 0);
 });
 
@@ -189,7 +202,7 @@ test("TEST-ROUTE-004 cost ceiling breach fails closed before provider call", asy
     maxCostCents: 4,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_1"), RelayError);
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_1", enforcement), RelayError);
   assert.equal(adapter.calls, 0);
 });
 
@@ -204,8 +217,8 @@ test("TEST-IDEMP-001 repeated idempotency key returns original response", async 
     maxCostCents: 5,
   });
 
-  const first = await service.completeChat(ctx, request, "idem_1");
-  const second = await service.completeChat(ctx, request, "idem_1");
+  const first = await service.completeChat(ctx, request, "idem_1", enforcement);
+  const second = await service.completeChat(ctx, request, "idem_1", enforcement);
 
   assert.deepEqual(second, first);
   assert.equal(adapter.calls, 1);
@@ -213,7 +226,7 @@ test("TEST-IDEMP-001 repeated idempotency key returns original response", async 
   assert.equal(usageRecords.length, 1);
 });
 
-test("TEST-IDEMP-005 completed idempotency key replays before current route policy", async () => {
+test("TEST-IDEMP-005 completed idempotency key does not bypass a revoked route", async () => {
   const { service, adapter, store, ctx } = fixture();
   const request = parseChatCompletionRequest({
     model: "local-demo",
@@ -224,12 +237,37 @@ test("TEST-IDEMP-005 completed idempotency key replays before current route poli
     maxCostCents: 5,
   });
 
-  const first = await service.completeChat(ctx, request, "idem_replay");
+  const first = await service.completeChat(ctx, request, "idem_replay", enforcement);
   store.routes[0] = { ...route, enabled: false };
-  const second = await service.completeChat(ctx, request, "idem_replay");
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_replay", enforcement), (error) => {
+    assert.ok(error instanceof RelayError);
+    assert.equal(error.code, "POLICY_BLOCKED");
+    return true;
+  });
 
-  assert.deepEqual(second, first);
+  assert.equal(first.id.startsWith("chat_"), true);
   assert.equal(adapter.calls, 1);
+});
+
+test("TEST-ROUTE-005 requested model must match the executed route before VEIL verification or provider I/O", async () => {
+  const { service, store, adapter, ctx } = fixture();
+  store.routes[0] = { ...route, model: "restricted-model" };
+  const request = parseChatCompletionRequest({
+    model: "local-demo",
+    purpose: "chat",
+    dataClassification: "internal",
+    messages: [{ role: "user", content: "hello" }],
+    requiredCapabilities: ["chat"],
+    maxCostCents: 5,
+  });
+
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_model_mismatch", enforcement), (error) => {
+    assert.ok(error instanceof RelayError);
+    assert.equal(error.code, "POLICY_BLOCKED");
+    assert.deepEqual(error.details, ["MODEL_MISMATCH"]);
+    return true;
+  });
+  assert.equal(adapter.calls, 0);
 });
 
 test("TEST-IDEMP-002 repeated idempotency key with different request returns conflict before provider I/O", async () => {
@@ -251,8 +289,8 @@ test("TEST-IDEMP-002 repeated idempotency key with different request returns con
     maxCostCents: 5,
   });
 
-  await service.completeChat(ctx, firstRequest, "idem_1");
-  await assert.rejects(() => service.completeChat(ctx, secondRequest, "idem_1"), (error) => {
+  await service.completeChat(ctx, firstRequest, "idem_1", enforcement);
+  await assert.rejects(() => service.completeChat(ctx, secondRequest, "idem_1", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "IDEMPOTENCY_CONFLICT");
     assert.equal(error.status, 409);
@@ -260,6 +298,23 @@ test("TEST-IDEMP-002 repeated idempotency key with different request returns con
   });
 
   assert.equal(adapter.calls, 1);
+});
+
+test("TEST-IDEMP-006 idempotency keys are isolated per actor", async () => {
+  const { service, adapter, ctx } = fixture();
+  const request = parseChatCompletionRequest({
+    model: "local-demo",
+    purpose: "chat",
+    dataClassification: "internal",
+    messages: [{ role: "user", content: "hello" }],
+    requiredCapabilities: ["chat"],
+    maxCostCents: 5,
+  });
+  await service.completeChat(ctx, request, "idem_actor", enforcement);
+  const anotherActor = { ...ctx, auth: { ...ctx.auth, actorId: "actor_2" } };
+
+  await service.completeChat(anotherActor, request, "idem_actor", enforcement);
+  assert.equal(adapter.calls, 2);
 });
 
 test("TEST-IDEMP-003 in-flight idempotency key does not duplicate provider I/O", async () => {
@@ -274,6 +329,7 @@ test("TEST-IDEMP-003 in-flight idempotency key does not duplicate provider I/O",
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
+    ...testVeilPorts(),
   });
   const { ctx } = fixture();
   const request = parseChatCompletionRequest({
@@ -285,9 +341,9 @@ test("TEST-IDEMP-003 in-flight idempotency key does not duplicate provider I/O",
     maxCostCents: 5,
   });
 
-  const first = service.completeChat(ctx, request, "idem_inflight");
+  const first = service.completeChat(ctx, request, "idem_inflight", enforcement);
   await adapter.entered;
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_inflight"), (error) => {
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_inflight", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "IDEMPOTENCY_IN_PROGRESS");
     return true;
@@ -311,6 +367,7 @@ test("TEST-IDEMP-004 failed idempotency reservation prevents duplicate provider 
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
+    ...testVeilPorts(),
   });
   const { ctx } = fixture();
   const request = parseChatCompletionRequest({
@@ -322,12 +379,12 @@ test("TEST-IDEMP-004 failed idempotency reservation prevents duplicate provider 
     maxCostCents: 5,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_failed"), (error) => {
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_failed", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "DEPENDENCY_UNAVAILABLE");
     return true;
   });
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_failed"), (error) => {
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_failed", enforcement), (error) => {
     assert.ok(error instanceof RelayError);
     assert.equal(error.code, "IDEMPOTENCY_FAILED");
     return true;
@@ -347,7 +404,7 @@ test("TEST-AUDIT-001 permitted chat records audit and usage without raw prompt",
     maxCostCents: 5,
   });
 
-  await service.completeChat(ctx, request, "idem_1");
+  await service.completeChat(ctx, request, "idem_1", enforcement);
 
   assert.equal(store.auditEvents.length, 1);
   assert.equal(store.usageRecords.length, 1);
@@ -377,7 +434,7 @@ test("TEST-TENANT-001 foreign tenant cannot use another tenant route", async () 
     maxCostCents: 5,
   });
 
-  await assert.rejects(() => service.completeChat(ctx, request, "idem_1"), RelayError);
+  await assert.rejects(() => service.completeChat(ctx, request, "idem_1", enforcement), RelayError);
 });
 
 test("TEST-SECRET-001 secret value does not appear in audit or usage", async () => {
@@ -391,7 +448,7 @@ test("TEST-SECRET-001 secret value does not appear in audit or usage", async () 
     maxCostCents: 5,
   });
 
-  await service.completeChat(ctx, request, "idem_1");
+  await service.completeChat(ctx, request, "idem_1", enforcement);
 
   const publicEvidence = JSON.stringify({ audit: store.auditEvents, usage: store.usageRecords });
   assert.equal(publicEvidence.includes("secret://local"), false);

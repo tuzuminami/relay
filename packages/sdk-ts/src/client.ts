@@ -37,12 +37,13 @@ export class RelayClient {
     return this.request(url, { method: "GET" });
   }
 
-  async completeChat(body: unknown, idempotencyKey: string): Promise<RelayEnvelope<unknown>> {
+  async completeChat(body: unknown, idempotencyKey: string, veilEnforcementToken: string): Promise<RelayEnvelope<unknown>> {
     return this.request(new URL("/v1/chat/completions", this.options.baseUrl), {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "idempotency-key": idempotencyKey,
+        "x-veil-enforcement": veilEnforcementToken,
       },
       body: JSON.stringify(body),
     });
