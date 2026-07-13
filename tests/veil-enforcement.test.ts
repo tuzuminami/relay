@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { InMemoryRelayStore, InMemoryUsageRepository, SequentialIdGenerator, StubProviderAdapter } from "../packages/adapters/src/in-memory.ts";
-import { createVeilDecisionVerifier, InMemoryVeilDecisionReplayStore } from "../packages/adapters/src/veil-enforcement.ts";
+import { createVeilDecisionVerifier, InMemoryVeilDecisionReplayStore, RELAY_VEIL_ENFORCEMENT_AUDIENCE } from "../packages/adapters/src/veil-enforcement.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
 import { computeRelayVeilInputHash, RelayService } from "../packages/core/src/relay-service.ts";
 import type { ChatCompletionRequest, ModelRoute, ProviderConfig, RequestContext } from "../packages/core/src/types.ts";
 
 const now = new Date("2026-07-13T00:00:00.000Z");
 const issuer = "https://veil.example.test";
-const audience = "relay-api";
+const audience = RELAY_VEIL_ENFORCEMENT_AUDIENCE;
+
+test("TEST-VEIL-000 exposes the stable VEIL enforcement audience contract", () => {
+  assert.equal(RELAY_VEIL_ENFORCEMENT_AUDIENCE, "relay-api");
+});
 
 const provider: ProviderConfig = {
   tenantId: "tenant_a",

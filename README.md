@@ -218,6 +218,9 @@ export RELAY_VEIL_AUDIENCE=relay-api
 export RELAY_VEIL_JWKS_URL=https://veil.example.com/.well-known/jwks.json
 ```
 
+`RELAY_VEIL_ENFORCEMENT_AUDIENCE` is the source-level protocol constant for this
+audience. Both values must stay aligned.
+
 The JWKS endpoint supports VEIL key rotation. RELAY uses a bounded remote JWKS
 cache, accepts tokens no older than five minutes, caps replay retention to the same window, and rejects an unavailable or unknown signing key. Production also requires
 `RELAY_DATABASE_URL` so decision replay protection is shared across instances.

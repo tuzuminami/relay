@@ -3,6 +3,9 @@ import { RelayError } from "../../core/src/errors.ts";
 import type { VeilDecisionReplayStore, VeilDecisionVerifier } from "../../core/src/ports.ts";
 import type { VerifiedVeilDecision } from "../../core/src/types.ts";
 
+// This is the protocol default VEIL must use when issuing RELAY enforcement tokens.
+export const RELAY_VEIL_ENFORCEMENT_AUDIENCE = "relay-api";
+
 export function createVeilDecisionVerifier({ issuer, audience, jwks }: { readonly issuer: string; readonly audience: string; readonly jwks: JSONWebKeySet }): VeilDecisionVerifier {
   return createVerifier({ issuer, audience, keySet: createLocalJWKSet(jwks) });
 }
