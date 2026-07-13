@@ -139,6 +139,22 @@ const firstMigration = resolveRelayMigrationPath(listRelayMigrations()[0]);
 configuration before creating a server. Use the migration helper with your
 database runner; the migration SQL is part of the package artifact.
 
+The package also exports its version-matched API contracts without requiring a
+repository checkout. Resolve the exported asset path and read it as data:
+
+```ts
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const openApi = readFileSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/openapi.yaml")), "utf8");
+const chatRequestSchema = JSON.parse(readFileSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/schemas/chat-completion-request.schema.json")), "utf8"));
+```
+
+`openapi.yaml`, `chat-completion-request.schema.json`, and
+`provider-validation-request.schema.json` share the package release version.
+Consumers that copied repository contract files should switch to these package
+exports before their next upgrade.
+
 Development auth uses an explicit local-only bearer token format:
 
 ```text

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ship OpenAPI and request schemas as explicit package exports, with packed-artifact release and consumer checks.
 - Publish `RELAY_VEIL_ENFORCEMENT_AUDIENCE` as the source-level VEIL enforcement protocol constant (`relay-api`).
 - Made PostgreSQL migrations repeatable with an advisory lock, checksum ledger,
   transaction boundaries, and concurrent-run regression coverage.

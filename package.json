@@ -20,12 +20,16 @@
       "types": "./dist/migrations/index.d.ts",
       "import": "./dist/migrations/index.js"
     },
+    "./contracts/openapi.yaml": "./packages/contracts/openapi.yaml",
+    "./contracts/schemas/chat-completion-request.schema.json": "./packages/contracts/schemas/chat-completion-request.schema.json",
+    "./contracts/schemas/provider-validation-request.schema.json": "./packages/contracts/schemas/provider-validation-request.schema.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "db/migrations",
     "docs/brand/banner.svg",
+    "packages/contracts",
     "README.md",
     "LICENSE",
     "SECURITY.md",
@@ -34,6 +38,8 @@
   "scripts": {
     "build": "pnpm run typecheck && node scripts/clean-dist.mjs && pnpm exec tsc -p tsconfig.build.json && node scripts/rewrite-declaration-import-extensions.mjs",
     "check:private-boundary": "node scripts/check-private-boundary.mjs",
+    "check:package-contracts": "node scripts/check-packed-contracts.mjs",
+    "check:release": "pnpm run check:version && pnpm run check:package-contracts",
     "check:version": "node scripts/check-version-metadata.mjs",
     "db:migrate": "node scripts/apply-sql.mjs --migrate",
     "db:seed": "node scripts/apply-sql.mjs --seed db/seeds/development.sql",
@@ -41,7 +47,7 @@
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm run check:private-boundary && pnpm run check:version && pnpm test && pnpm pack --dry-run"
+    "verify": "pnpm run check:private-boundary && pnpm run check:release && pnpm test && pnpm pack --dry-run"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
