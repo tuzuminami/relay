@@ -173,11 +173,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/RouteResolutionEnvelope"
         "403":
-          description: No compliant route is available; response remains a dry-run route resolution envelope with allowed=false.
+          description: >-
+            No compliant route is available, or authentication denied the tenant.
+            Route policy denials use the dry-run route resolution envelope;
+            authentication denials use the error envelope.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RouteResolutionEnvelope"
+                oneOf:
+                  - $ref: "#/components/schemas/RouteResolutionEnvelope"
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Authentication dependency failed safely before route resolution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/chat/completions:
     post:
       security:
@@ -258,7 +275,7 @@ paths:
                       details: []
                       correlationId: corr_demo
         "503":
-          description: Provider or runtime dependency failed safely without exposing secrets.
+          description: Provider, authentication, or runtime dependency failed safely without exposing secrets.
           content:
             application/json:
               schema:
@@ -281,6 +298,12 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "403":
           description: Tenant scope denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Authentication or runtime dependency failed safely without exposing secrets.
           content:
             application/json:
               schema:
@@ -330,3 +353,9 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/ProviderValidationEnvelope"
                   - $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Authentication or runtime dependency failed safely without exposing secrets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"

@@ -8,6 +8,24 @@ export interface AuthAdapter {
   authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext | Promise<AuthContext>;
 }
 
+/**
+ * Production adapters may reject with this structural value. RELAY deliberately
+ * ignores adapter-provided messages and details, and maps only these codes to
+ * its fixed public HTTP contract.
+ */
+export type AuthAdapterFailure = Readonly<{
+  code: "AUTHENTICATION_REQUIRED" | "TENANT_SCOPE_DENIED" | "DEPENDENCY_UNAVAILABLE";
+}>;
+
+export function authAdapterFailure(code: AuthAdapterFailure["code"]): AuthAdapterFailure {
+  return Object.freeze({ code });
+}
+
+const DEFAULT_AUTH_ADAPTER_TIMEOUT_MS = 5_000;
+const MAX_AUTH_ADAPTER_TIMEOUT_MS = 30_000;
+
+class AuthAdapterTimeoutError extends Error {}
+
 export class DevelopmentAuthAdapter implements AuthAdapter {
   private readonly authAdapter: "development" | "test";
 
@@ -50,12 +68,18 @@ export async function authenticateRequest(
   authorization: string | undefined,
   tenantHeader: string | undefined,
 ): Promise<AuthContext> {
-  try {
-    return validateAuthContext(await authAdapter.authenticate(authorization, tenantHeader), tenantHeader);
-  } catch (error) {
-    if (error instanceof RelayError) throw error;
-    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency is unavailable.", 503, ["auth_adapter_unavailable"], true);
+  if (tenantHeader === undefined || tenantHeader.trim().length === 0) {
+    throw tenantScopeDenied();
   }
+
+  let adapterResult: unknown;
+  try {
+    adapterResult = await authenticateWithTimeout(authAdapter, authorization, tenantHeader);
+  } catch (error) {
+    throw safeAuthAdapterError(error);
+  }
+
+  return snapshotAuthContext(adapterResult, tenantHeader);
 }
 
 export function buildRuntimeAuthAdapter(): AuthAdapter {
@@ -95,21 +119,109 @@ export function validateRuntimeAuthMode(): void {
   }
 }
 
-function validateAuthContext(value: unknown, tenantHeader: string | undefined): AuthContext {
+async function authenticateWithTimeout(
+  authAdapter: AuthAdapter,
+  authorization: string | undefined,
+  tenantHeader: string,
+): Promise<unknown> {
+  const timeoutMs = authAdapterTimeoutFromEnvironment();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(authAdapter.authenticate(authorization, tenantHeader)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new AuthAdapterTimeoutError()), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function authAdapterTimeoutFromEnvironment(): number {
+  const configured = process.env.RELAY_AUTH_TIMEOUT_MS;
+  if (configured === undefined || configured.length === 0) return DEFAULT_AUTH_ADAPTER_TIMEOUT_MS;
+  const timeoutMs = Number(configured);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_AUTH_ADAPTER_TIMEOUT_MS) {
+    throw new RelayError(
+      "CONFIGURATION_INVALID",
+      `RELAY_AUTH_TIMEOUT_MS must be an integer between 1 and ${MAX_AUTH_ADAPTER_TIMEOUT_MS}.`,
+      503,
+    );
+  }
+  return timeoutMs;
+}
+
+function snapshotAuthContext(value: unknown, tenantHeader: string): AuthContext {
   if (typeof value !== "object" || value === null) {
-    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency returned an invalid identity.", 503, ["auth_adapter_invalid_response"], true);
+    throw invalidAuthAdapterResponse();
   }
   const context = value as Partial<AuthContext>;
+  let actorId: unknown;
+  let tenantId: unknown;
+  let scopesValue: unknown;
+  let authAdapter: unknown;
+  try {
+    actorId = context.actorId;
+    tenantId = context.tenantId;
+    scopesValue = context.scopes;
+    authAdapter = context.authAdapter;
+  } catch {
+    throw invalidAuthAdapterResponse();
+  }
+
   if (
-    typeof context.actorId !== "string" || context.actorId.length === 0 ||
-    typeof context.tenantId !== "string" || context.tenantId.length === 0 ||
-    !Array.isArray(context.scopes) || !context.scopes.every((scope) => typeof scope === "string" && scope.length > 0) ||
-    (context.authAdapter !== "development" && context.authAdapter !== "test" && context.authAdapter !== "production")
+    typeof actorId !== "string" || actorId.length === 0 ||
+    typeof tenantId !== "string" || tenantId.length === 0 ||
+    !Array.isArray(scopesValue) ||
+    (authAdapter !== "development" && authAdapter !== "test" && authAdapter !== "production")
   ) {
-    throw new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency returned an invalid identity.", 503, ["auth_adapter_invalid_response"], true);
+    throw invalidAuthAdapterResponse();
   }
-  if (tenantHeader !== undefined && tenantHeader !== context.tenantId) {
-    throw new RelayError("TENANT_SCOPE_DENIED", "Request cannot access this resource.", 403);
+
+  const scopes: string[] = [];
+  try {
+    for (const scope of scopesValue) {
+      if (typeof scope !== "string" || scope.length === 0) throw new TypeError("Invalid scope.");
+      scopes.push(scope);
+    }
+  } catch {
+    throw invalidAuthAdapterResponse();
   }
-  return context as AuthContext;
+
+  if (tenantHeader !== tenantId) throw tenantScopeDenied();
+  return { actorId, tenantId, scopes: Object.freeze(scopes), authAdapter };
+}
+
+function safeAuthAdapterError(error: unknown): RelayError {
+  if (error instanceof AuthAdapterTimeoutError) {
+    return new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency is unavailable.", 503, ["auth_adapter_timeout"], true);
+  }
+  const code = authAdapterFailureCode(error);
+  if (code === "AUTHENTICATION_REQUIRED") {
+    return new RelayError("AUTHENTICATION_REQUIRED", "Authentication is required.", 401);
+  }
+  if (code === "TENANT_SCOPE_DENIED") return tenantScopeDenied();
+  return new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency is unavailable.", 503, ["auth_adapter_unavailable"], true);
+}
+
+function authAdapterFailureCode(error: unknown): AuthAdapterFailure["code"] | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  try {
+    const code = (error as { readonly code?: unknown }).code;
+    return code === "AUTHENTICATION_REQUIRED" || code === "TENANT_SCOPE_DENIED" || code === "DEPENDENCY_UNAVAILABLE"
+      ? code
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function tenantScopeDenied(): RelayError {
+  return new RelayError("TENANT_SCOPE_DENIED", "Request cannot access this resource.", 403);
+}
+
+function invalidAuthAdapterResponse(): RelayError {
+  return new RelayError("DEPENDENCY_UNAVAILABLE", "Authentication dependency returned an invalid identity.", 503, ["auth_adapter_invalid_response"], true);
 }

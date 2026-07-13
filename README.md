@@ -185,6 +185,14 @@ development bearer tokens are rejected in production. Provider credentials are
 configured as secret references and are not included in public
 configuration exports, audit events, usage records, or test fixtures.
 
+The adapter may return a promise and may reject with
+`authAdapterFailure("AUTHENTICATION_REQUIRED" | "TENANT_SCOPE_DENIED" |
+"DEPENDENCY_UNAVAILABLE")`. RELAY snapshots the returned identity, requires a
+non-empty `X-Tenant-Id` before adapter I/O, and maps only those codes to stable
+public errors. It never expose adapter-provided messages, details, or statuses.
+Set `RELAY_AUTH_TIMEOUT_MS` to an integer from `1` to `30000` (default `5000`)
+to bound authentication dependency latency.
+
 Production provider egress is fail-closed. Set `RELAY_PROVIDER_ALLOWED_ORIGINS`
 to a comma-separated list of exact HTTPS origins (for example,
 `https://api.openai.com`). RELAY rejects provider URLs outside that allowlist,

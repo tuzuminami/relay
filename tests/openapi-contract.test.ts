@@ -27,3 +27,17 @@ test("TEST-CONTRACT-002 OpenAPI keeps secret references out of route resolution 
   assert.notEqual(routeResolveSection.length, 0);
   assert.equal(routeResolveSection.includes("secretReference"), false);
 });
+
+test("TEST-CONTRACT-003 OpenAPI documents stable authentication failures on every protected endpoint", () => {
+  const protectedPaths = ["/v1/routes/resolve", "/v1/chat/completions", "/v1/usage", "/v1/providers/validate"];
+  for (const path of protectedPaths) {
+    const start = openApi.indexOf(`  ${path}:`);
+    const next = openApi.indexOf("  /v1/", start + 1);
+    const section = openApi.slice(start, next === -1 ? undefined : next);
+    assert.notEqual(start, -1, `${path} is missing`);
+    assert.match(section, /"401":/);
+    assert.match(section, /"403":/);
+    assert.match(section, /"503":/);
+    assert.match(section, /#\/components\/schemas\/ErrorEnvelope/);
+  }
+});
