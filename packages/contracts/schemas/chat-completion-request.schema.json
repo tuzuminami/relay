@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-relay-contract-version": "1.0.0",
   "$id": "https://relay.local/schemas/chat-completion-request.schema.json",
   "title": "ChatCompletionRequest",
   "type": "object",

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RELAY API
-  version: 0.2.0
+  version: 1.0.0
 components:
   securitySchemes:
     bearerAuth:
@@ -21,6 +21,17 @@ components:
       schema:
         type: string
   schemas:
+    Meta:
+      type: object
+      required: [requestId, correlationId, apiVersion]
+      properties:
+        requestId:
+          type: string
+        correlationId:
+          type: string
+        apiVersion:
+          type: string
+          const: v1
     RouteResolutionEnvelope:
       type: object
       required: [data, meta]
@@ -63,7 +74,7 @@ components:
                   items:
                     type: string
         meta:
-          type: object
+          $ref: "#/components/schemas/Meta"
     ProviderValidationEnvelope:
       type: object
       required: [data, meta]
@@ -85,7 +96,7 @@ components:
               items:
                 type: string
         meta:
-          type: object
+          $ref: "#/components/schemas/Meta"
     ErrorEnvelope:
       type: object
       required: [error]

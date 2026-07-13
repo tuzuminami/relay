@@ -5,7 +5,8 @@ import test from "node:test";
 const openApi = readFileSync("packages/contracts/openapi.yaml", "utf8");
 
 test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors", () => {
-  assert.match(openApi, /version:\s+0\.2\.0/);
+  assert.match(openApi, /version:\s+1\.0\.0/);
+  assert.match(openApi, /apiVersion:\s*\n\s+type:\s+string\s*\n\s+const:\s+v1/);
   assert.match(openApi, /\/v1\/routes\/resolve:/);
   assert.match(openApi, /Route resolution is a dry-run and never calls a provider\./);
   assert.match(openApi, /IDEMPOTENCY_CONFLICT/);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Aligned package, OpenAPI, request-schema, and documentation release metadata
+  behind a version-drift gate.
 - Published compiled JavaScript and declaration artifacts with supported SDK,
   server, and migration entrypoints.
 - Added a clean-consumer tarball test and removed development source/scripts

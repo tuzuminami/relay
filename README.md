@@ -74,6 +74,18 @@ trying to compete as a general-purpose inference gateway.
 - Bounded timeout handling for OpenAI-compatible provider calls
 - Public private-boundary guard for tracked and staged files
 
+## Versioning
+
+RELAY's package, OpenAPI `info.version`, and request schema
+`x-relay-contract-version` share the release SemVer (`1.0.0` for this
+release). `pnpm run check:version` rejects drift across those public contract
+surfaces, the README, and the changelog.
+
+The HTTP API path and response metadata use the separate major compatibility
+domain `v1` (`/v1/...` and `meta.apiVersion`). JSON Schema's `$schema` remains
+the independent JSON Schema draft identifier. Those two values intentionally
+do not mirror the package SemVer.
+
 ## Quick Start
 
 ```bash
