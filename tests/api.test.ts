@@ -433,29 +433,33 @@ test("TEST-AUTH-007 snapshots adapter identities and times out unresolved authen
   mutableIdentity.scopes[0] = "admin:all";
   assert.deepEqual(snapshot.scopes, ["relay:invoke"]);
 
-  const timeoutFixture = buildApiFixture();
   const previousTimeout = process.env.RELAY_AUTH_TIMEOUT_MS;
-  let aborted = false;
   process.env.RELAY_AUTH_TIMEOUT_MS = "1";
   try {
-    await withRelayServer(timeoutFixture.service, async (port) => {
-      const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
-        headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
-      });
-      const payload = await response.json() as { error: { code: string; details: string[] } };
-      assert.equal(response.status, 503);
-      assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
-      assert.deepEqual(payload.error.details, ["auth_adapter_timeout"]);
-      assert.equal(timeoutFixture.adapter.calls, 0);
-    }, {
-      authenticate: async (_authorization, _tenantHeader, signal) => await new Promise<AuthIdentity>((_resolve, reject) => {
-        signal?.addEventListener("abort", () => {
-          aborted = true;
-          reject(new Error("adapter aborted"));
-        }, { once: true });
-      }),
-    });
-    assert.equal(aborted, true);
+    for (const behavior of ["resolve", "reject"] as const) {
+      const timeoutFixture = buildApiFixture();
+      let aborted = false;
+      const adapter: AuthAdapter = {
+        authenticate: (_authorization, _tenantHeader, signal) => new Promise<AuthIdentity>((resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            if (behavior === "resolve") resolve({ actorId: "late_actor", tenantId: "tenant_a", scopes: ["relay:invoke"] });
+            else reject(authAdapterFailure("AUTHENTICATION_REQUIRED"));
+          }, { once: true });
+        }),
+      };
+      await withRelayServer(timeoutFixture.service, async (port) => {
+        const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+          headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
+        });
+        const payload = await response.json() as { error: { code: string; details: string[] } };
+        assert.equal(response.status, 503);
+        assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+        assert.deepEqual(payload.error.details, ["auth_adapter_timeout"]);
+        assert.equal(timeoutFixture.adapter.calls, 0);
+      }, adapter);
+      assert.equal(aborted, true, `${behavior} adapter must observe the abort signal`);
+    }
   } finally {
     if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
     else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
@@ -497,6 +501,23 @@ test("TEST-AUTH-008 rejects invalid timeout configuration before serving request
     if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
     else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
   }
+});
+
+test("TEST-AUTH-009 keeps legacy two-argument production adapters compatible", async () => {
+  const legacyAdapter: AuthAdapter = {
+    authenticate(_authorization, _tenantHeader) {
+      return {
+        actorId: "actor_1",
+        tenantId: "tenant_a",
+        scopes: ["relay:invoke"],
+        authAdapter: "test",
+      };
+    },
+  };
+
+  const auth = await authenticateRequest(legacyAdapter, "Bearer legacy", "tenant_a");
+  assert.equal(auth.authAdapter, "production");
+  assert.deepEqual(auth.scopes, ["relay:invoke"]);
 });
 
 test("TEST-API-002 HTTP route dry-run redacts provider secret reference and avoids provider I/O", async () => {

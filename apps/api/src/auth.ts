@@ -133,18 +133,27 @@ async function authenticateWithTimeout(
   timeoutMs: number,
 ): Promise<unknown> {
   const controller = new AbortController();
+  let timedOut = false;
   let timer: NodeJS.Timeout | undefined;
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       Promise.resolve(authAdapter.authenticate(authorization, tenantHeader, controller.signal)),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          controller.abort();
+          timedOut = true;
           reject(new AuthAdapterTimeoutError());
+          controller.abort();
         }, timeoutMs);
         timer.unref();
       }),
     ]);
+    if (timedOut) throw new AuthAdapterTimeoutError();
+    return result;
+  } catch (error) {
+    if (timedOut && !(error instanceof AuthAdapterTimeoutError)) {
+      throw new AuthAdapterTimeoutError();
+    }
+    throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

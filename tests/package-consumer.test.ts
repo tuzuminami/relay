@@ -55,9 +55,11 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
     'const client = new RelayClient({ baseUrl: "https://relay.example.test", token: "token", tenantId: "tenant" });',
     'const server = createProductionRelayHttpServer;',
     'const adapter: AuthAdapter = { authenticate: (_authorization, _tenantHeader, signal) => { void signal; return { actorId: "actor", tenantId: "tenant", scopes: ["relay:invoke"] }; } };',
+    'const legacyIdentity = { actorId: "actor", tenantId: "tenant", scopes: ["relay:invoke"], authAdapter: "test" as const };',
+    'const legacyAdapter: AuthAdapter = { authenticate: (_authorization, _tenantHeader) => legacyIdentity };',
     'const failure = authAdapterFailure("AUTHENTICATION_REQUIRED");',
     'const path = resolveRelayMigrationPath(listRelayMigrations()[0]);',
-    'void client; void server; void adapter; void failure; void path;'
+    'void client; void server; void adapter; void legacyAdapter; void failure; void path;'
   ].join("\n"));
   writeFileSync(join(consumerDirectory, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext", noEmit: true, strict: true, target: "ES2024", types: ["node"] } }));
   run("npx", ["tsc", "--project", "tsconfig.json"], consumerDirectory);
