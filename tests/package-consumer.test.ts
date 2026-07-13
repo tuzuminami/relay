@@ -33,11 +33,11 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
 
   const program = [
     'import { RelayClient } from "@tuzuminami/relay";',
-    'import { createProductionRelayHttpServer } from "@tuzuminami/relay/server";',
+    'import { authAdapterFailure, createProductionRelayHttpServer } from "@tuzuminami/relay/server";',
     'import { listRelayMigrations, resolveRelayMigrationPath } from "@tuzuminami/relay/migrations";',
     'import { statSync } from "node:fs";',
     'const client = new RelayClient({ baseUrl: "https://relay.example.test", token: "token", tenantId: "tenant" });',
-    'if (!(client instanceof RelayClient) || typeof createProductionRelayHttpServer !== "function") process.exit(1);',
+    'if (!(client instanceof RelayClient) || typeof createProductionRelayHttpServer !== "function" || authAdapterFailure("AUTHENTICATION_REQUIRED").code !== "AUTHENTICATION_REQUIRED") process.exit(1);',
     'const migrations = listRelayMigrations();',
     'if (migrations.length !== 1 || !statSync(resolveRelayMigrationPath(migrations[0])).isFile()) process.exit(1);',
     'migrations.push("../package.json");',
@@ -50,12 +50,16 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
 
   writeFileSync(join(consumerDirectory, "index.ts"), [
     'import { RelayClient } from "@tuzuminami/relay";',
-    'import { createProductionRelayHttpServer } from "@tuzuminami/relay/server";',
+    'import { authAdapterFailure, createProductionRelayHttpServer, type AuthAdapter } from "@tuzuminami/relay/server";',
     'import { listRelayMigrations, resolveRelayMigrationPath } from "@tuzuminami/relay/migrations";',
     'const client = new RelayClient({ baseUrl: "https://relay.example.test", token: "token", tenantId: "tenant" });',
     'const server = createProductionRelayHttpServer;',
+    'const adapter: AuthAdapter = { authenticate: (_authorization, _tenantHeader, signal) => { void signal; return { actorId: "actor", tenantId: "tenant", scopes: ["relay:invoke"] }; } };',
+    'const legacyIdentity = { actorId: "actor", tenantId: "tenant", scopes: ["relay:invoke"], authAdapter: "test" as const };',
+    'const legacyAdapter: AuthAdapter = { authenticate: (_authorization, _tenantHeader) => legacyIdentity };',
+    'const failure = authAdapterFailure("AUTHENTICATION_REQUIRED");',
     'const path = resolveRelayMigrationPath(listRelayMigrations()[0]);',
-    'void client; void server; void path;'
+    'void client; void server; void adapter; void legacyAdapter; void failure; void path;'
   ].join("\n"));
   writeFileSync(join(consumerDirectory, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "NodeNext", moduleResolution: "NodeNext", noEmit: true, strict: true, target: "ES2024", types: ["node"] } }));
   run("npx", ["tsc", "--project", "tsconfig.json"], consumerDirectory);

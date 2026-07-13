@@ -6,7 +6,7 @@ import { allowedOriginsFromEnvironment, canonicalProviderOrigin, isProductionRun
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
 import { createRemoteVeilDecisionVerifier, defaultProviderConfig, defaultRoute, InMemoryRelayStore, InMemoryUsageRepository, InMemoryVeilDecisionReplayStore, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver, SystemClock } from "../../../packages/adapters/src/index.ts";
-import { buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
+import { authAdapterTimeoutFromEnvironment, authenticateRequest, buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
 
 export function buildDefaultService(): RelayService {
   const providerSecret = resolveProviderSecret();
@@ -99,16 +99,23 @@ export function runtimeProviderEgressPolicy(): ProviderEgressPolicy {
 }
 
 export function createRelayHttpServer(service: RelayService = buildDefaultService(), authAdapter: AuthAdapter = buildRuntimeAuthAdapter()) {
+  const authTimeoutMs = authAdapterTimeoutFromEnvironment();
   return createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, service, authAdapter);
+      await handleRequest(req, res, service, authAdapter, authTimeoutMs);
     } catch (error) {
       writeError(res, error, req.headers["x-correlation-id"]);
     }
   });
 }
 
-async function handleRequest(req: IncomingMessage, res: ServerResponse, service: RelayService, authAdapter: AuthAdapter): Promise<void> {
+async function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: RelayService,
+  authAdapter: AuthAdapter,
+  authTimeoutMs: number,
+): Promise<void> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (req.method === "GET" && url.pathname === "/health") {
     writeJson(res, 200, { data: { status: "ok" }, meta: meta(req) });
@@ -119,7 +126,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, service:
     return;
   }
 
-  const auth = authAdapter.authenticate(singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]));
+  const auth = await authenticateRequest(authAdapter, singleHeader(req.headers.authorization), singleHeader(req.headers["x-tenant-id"]), authTimeoutMs);
   const ctx = {
     auth,
     requestId: randomUUID(),

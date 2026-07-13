@@ -3,11 +3,11 @@ import test from "node:test";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { buildDefaultService, createRelayHttpServer, runtimeProviderEgressPolicy } from "../apps/api/src/server.ts";
-import { loadRuntimeAuthAdapter, validateRuntimeAuthMode } from "../apps/api/src/auth.ts";
+import { authAdapterFailure, authenticateRequest, loadRuntimeAuthAdapter, validateRuntimeAuthMode, type AuthAdapter, type AuthIdentity } from "../apps/api/src/auth.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
 import { RelayService } from "../packages/core/src/relay-service.ts";
 import { FixedClock, InMemoryRelayStore, InMemoryUsageRepository, SequentialIdGenerator, StubProviderAdapter } from "../packages/adapters/src/in-memory.ts";
-import type { ModelRoute, ProviderConfig } from "../packages/core/src/types.ts";
+import type { AuthContext, ModelRoute, ProviderConfig } from "../packages/core/src/types.ts";
 
 const apiProvider: ProviderConfig = {
   tenantId: "tenant_a",
@@ -49,8 +49,8 @@ function buildApiFixture() {
   return { adapter, service, store };
 }
 
-async function withRelayServer<T>(service: RelayService, run: (port: number) => Promise<T>): Promise<T> {
-  const server = createRelayHttpServer(service);
+async function withRelayServer<T>(service: RelayService, run: (port: number) => Promise<T>, authAdapter?: AuthAdapter): Promise<T> {
+  const server = createRelayHttpServer(service, authAdapter);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -328,6 +328,213 @@ test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
     });
     assert.equal(denied.status, 403);
   });
+});
+
+test("TEST-AUTH-003 awaits a production authentication adapter before route resolution", async () => {
+  const { service, adapter } = buildApiFixture();
+  const asyncAuthAdapter: AuthAdapter = {
+    async authenticate(): Promise<AuthIdentity> {
+      await Promise.resolve();
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"] };
+    },
+  };
+
+  await withRelayServer(service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(adapter.calls, 0);
+  }, asyncAuthAdapter);
+});
+
+test("TEST-AUTH-004 rejects authentication failures before provider I/O", async () => {
+  const invalidCredentials = buildApiFixture();
+  const rejectedAdapter: AuthAdapter = {
+    async authenticate() {
+      throw authAdapterFailure("AUTHENTICATION_REQUIRED");
+    },
+  };
+  await withRelayServer(invalidCredentials.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    const payload = await response.json() as { error: { code: string; message: string; details: string[] } };
+    assert.equal(response.status, 401);
+    assert.equal(payload.error.code, "AUTHENTICATION_REQUIRED");
+    assert.equal(payload.error.message, "Authentication is required.");
+    assert.deepEqual(payload.error.details, []);
+    assert.equal(invalidCredentials.adapter.calls, 0);
+  }, rejectedAdapter);
+
+  const dependencyFailure = buildApiFixture();
+  const failingAdapter: AuthAdapter = { async authenticate() { throw new Error("jwks unavailable"); } };
+  await withRelayServer(dependencyFailure.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    const payload = await response.json() as { error: { code: string; details: string[] } };
+    assert.equal(response.status, 503);
+    assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.deepEqual(payload.error.details, ["auth_adapter_unavailable"]);
+    assert.equal(dependencyFailure.adapter.calls, 0);
+  }, failingAdapter);
+});
+
+test("TEST-AUTH-006 normalizes adapter failures and requires a tenant header before adapter I/O", async () => {
+  const fixture = buildApiFixture();
+  let adapterCalls = 0;
+  const unsafeAdapter: AuthAdapter = {
+    async authenticate() {
+      adapterCalls += 1;
+      throw new RelayError("POLICY_BLOCKED", "private authentication detail", 418, ["do-not-expose"], false);
+    },
+  };
+
+  await withRelayServer(fixture.service, async (port) => {
+    const missingTenant = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer async" },
+    });
+    assert.equal(missingTenant.status, 403);
+    assert.equal(adapterCalls, 0);
+
+    const unsafeFailure = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
+    });
+    const payload = await unsafeFailure.json() as { error: { code: string; message: string; details: string[]; correlationId: string } };
+    assert.equal(unsafeFailure.status, 503);
+    assert.deepEqual(payload.error, {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "Authentication dependency is unavailable.",
+      details: ["auth_adapter_unavailable"],
+      correlationId: payload.error.correlationId,
+    });
+    assert.equal(adapterCalls, 1);
+    assert.equal(fixture.adapter.calls, 0);
+  }, unsafeAdapter);
+});
+
+test("TEST-AUTH-007 snapshots adapter identities and times out unresolved authentication", async () => {
+  const mutableIdentity = {
+    actorId: "actor_1",
+    tenantId: "tenant_a",
+    scopes: ["relay:invoke"],
+  };
+  const mutableAdapter: AuthAdapter = {
+    async authenticate() {
+      return mutableIdentity;
+    },
+  };
+  const snapshot = await authenticateRequest(mutableAdapter, "Bearer async", "tenant_a");
+  mutableIdentity.scopes[0] = "admin:all";
+  assert.deepEqual(snapshot.scopes, ["relay:invoke"]);
+
+  const previousTimeout = process.env.RELAY_AUTH_TIMEOUT_MS;
+  process.env.RELAY_AUTH_TIMEOUT_MS = "1";
+  try {
+    for (const behavior of ["resolve", "reject"] as const) {
+      const timeoutFixture = buildApiFixture();
+      let aborted = false;
+      const adapter: AuthAdapter = {
+        authenticate: (_authorization, _tenantHeader, signal) => new Promise<AuthIdentity>((resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            if (behavior === "resolve") resolve({ actorId: "late_actor", tenantId: "tenant_a", scopes: ["relay:invoke"] });
+            else reject(authAdapterFailure("AUTHENTICATION_REQUIRED"));
+          }, { once: true });
+        }),
+      };
+      await withRelayServer(timeoutFixture.service, async (port) => {
+        const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+          headers: { authorization: "Bearer async", "x-tenant-id": "tenant_a" },
+        });
+        const payload = await response.json() as { error: { code: string; details: string[] } };
+        assert.equal(response.status, 503);
+        assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+        assert.deepEqual(payload.error.details, ["auth_adapter_timeout"]);
+        assert.equal(timeoutFixture.adapter.calls, 0);
+      }, adapter);
+      assert.equal(aborted, true, `${behavior} adapter must observe the abort signal`);
+    }
+  } finally {
+    if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
+    else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test("TEST-AUTH-005 rejects malformed asynchronous identities before route or provider access", async () => {
+  const fixture = buildApiFixture();
+  const malformedAdapter: AuthAdapter = {
+    async authenticate() {
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: "relay:invoke" } as unknown as AuthIdentity;
+    },
+  };
+
+  await withRelayServer(fixture.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: chatBody("never sent"),
+    });
+    const payload = await response.json() as { error: { code: string; details: string[] } };
+    assert.equal(response.status, 503);
+    assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.deepEqual(payload.error.details, ["auth_adapter_invalid_response"]);
+    assert.equal(fixture.adapter.calls, 0);
+  }, malformedAdapter);
+});
+
+test("TEST-AUTH-008 rejects invalid timeout configuration before serving requests", () => {
+  const previousTimeout = process.env.RELAY_AUTH_TIMEOUT_MS;
+  process.env.RELAY_AUTH_TIMEOUT_MS = "invalid";
+  try {
+    const { service } = buildApiFixture();
+    assert.throws(
+      () => createRelayHttpServer(service, { authenticate: () => ({ actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"] }) }),
+      (error) => error instanceof RelayError && error.code === "CONFIGURATION_INVALID",
+    );
+  } finally {
+    if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
+    else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test("TEST-AUTH-009 keeps legacy two-argument production adapters compatible", async () => {
+  const legacyAdapter: AuthAdapter = {
+    authenticate(_authorization, _tenantHeader) {
+      return {
+        actorId: "actor_1",
+        tenantId: "tenant_a",
+        scopes: ["relay:invoke"],
+        authAdapter: "test",
+      };
+    },
+  };
+
+  const auth = await authenticateRequest(legacyAdapter, "Bearer legacy", "tenant_a");
+  assert.equal(auth.authAdapter, "production");
+  assert.deepEqual(auth.scopes, ["relay:invoke"]);
+});
+
+test("TEST-AUTH-010 rejects a production adapter identity from another tenant", async () => {
+  const fixture = buildApiFixture();
+  const crossTenantAdapter: AuthAdapter = {
+    authenticate() {
+      return { actorId: "actor_1", tenantId: "tenant_b", scopes: ["relay:invoke"] };
+    },
+  };
+
+  await withRelayServer(fixture.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer production", "x-tenant-id": "tenant_a" },
+    });
+    assert.equal(response.status, 403);
+    assert.equal(fixture.adapter.calls, 0);
+  }, crossTenantAdapter);
 });
 
 test("TEST-API-002 HTTP route dry-run redacts provider secret reference and avoids provider I/O", async () => {
