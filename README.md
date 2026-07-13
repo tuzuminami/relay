@@ -101,6 +101,12 @@ pnpm run db:migrate
 pnpm run db:seed
 ```
 
+`db:migrate` uses a PostgreSQL advisory lock and checksummed
+`relay_meta.schema_migrations` ledger. Re-running is safe; changing or removing
+an applied migration fails closed. Production requires a dedicated
+`RELAY_MIGRATION_DATABASE_URL`; the runtime role must not receive access to the
+`relay_meta` schema.
+
 Start the API in development mode:
 
 ```bash

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Made PostgreSQL migrations repeatable with an advisory lock, checksum ledger,
+  transaction boundaries, and concurrent-run regression coverage.
 - Aligned package, OpenAPI, request-schema, and documentation release metadata
   behind a version-drift gate.
 - Published compiled JavaScript and declaration artifacts with supported SDK,
