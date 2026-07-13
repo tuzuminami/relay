@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-relay-contract-version": "1.0.0",
   "$id": "https://relay.local/schemas/provider-validation-request.schema.json",
   "title": "ProviderValidationRequest",
   "type": "object",

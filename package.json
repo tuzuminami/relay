@@ -34,13 +34,14 @@
   "scripts": {
     "build": "pnpm run typecheck && node scripts/clean-dist.mjs && pnpm exec tsc -p tsconfig.build.json && node scripts/rewrite-declaration-import-extensions.mjs",
     "check:private-boundary": "node scripts/check-private-boundary.mjs",
+    "check:version": "node scripts/check-version-metadata.mjs",
     "db:migrate": "node scripts/apply-sql.mjs db/migrations/0001_initial.sql",
     "db:seed": "node scripts/apply-sql.mjs db/seeds/development.sql",
     "prepack": "pnpm run build",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm run check:private-boundary && pnpm test && pnpm pack --dry-run"
+    "verify": "pnpm run check:private-boundary && pnpm run check:version && pnpm test && pnpm pack --dry-run"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
