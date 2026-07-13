@@ -520,6 +520,23 @@ test("TEST-AUTH-009 keeps legacy two-argument production adapters compatible", a
   assert.deepEqual(auth.scopes, ["relay:invoke"]);
 });
 
+test("TEST-AUTH-010 rejects a production adapter identity from another tenant", async () => {
+  const fixture = buildApiFixture();
+  const crossTenantAdapter: AuthAdapter = {
+    authenticate() {
+      return { actorId: "actor_1", tenantId: "tenant_b", scopes: ["relay:invoke"] };
+    },
+  };
+
+  await withRelayServer(fixture.service, async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/routes/resolve?purpose=chat&dataClassification=internal&capability=chat&maxCostCents=5`, {
+      headers: { authorization: "Bearer production", "x-tenant-id": "tenant_a" },
+    });
+    assert.equal(response.status, 403);
+    assert.equal(fixture.adapter.calls, 0);
+  }, crossTenantAdapter);
+});
+
 test("TEST-API-002 HTTP route dry-run redacts provider secret reference and avoids provider I/O", async () => {
   const { adapter, service } = buildApiFixture();
 
