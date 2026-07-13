@@ -5,7 +5,14 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export interface AuthAdapter {
-  authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext | Promise<AuthContext>;
+  authenticate(authorization: string | undefined, tenantHeader: string | undefined, signal?: AbortSignal): AuthIdentity | Promise<AuthIdentity>;
+}
+
+/** The verified identity shape production adapters return to RELAY. */
+export interface AuthIdentity {
+  readonly actorId: string;
+  readonly tenantId: string;
+  readonly scopes: readonly string[];
 }
 
 /**
@@ -27,13 +34,13 @@ const MAX_AUTH_ADAPTER_TIMEOUT_MS = 30_000;
 class AuthAdapterTimeoutError extends Error {}
 
 export class DevelopmentAuthAdapter implements AuthAdapter {
-  private readonly authAdapter: "development" | "test";
+  readonly provenance: "development" | "test";
 
   constructor(authAdapter: "development" | "test" = "development") {
-    this.authAdapter = authAdapter;
+    this.provenance = authAdapter;
   }
 
-  authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthContext {
+  authenticate(authorization: string | undefined, tenantHeader: string | undefined): AuthIdentity {
     if (authorization === undefined || !authorization.startsWith("Bearer ")) {
       throw new RelayError("AUTHENTICATION_REQUIRED", "Authentication is required.", 401);
     }
@@ -54,7 +61,6 @@ export class DevelopmentAuthAdapter implements AuthAdapter {
       actorId,
       tenantId,
       scopes: scopesRaw.split(",").filter((scope) => scope.length > 0),
-      authAdapter: this.authAdapter,
     };
   }
 }
@@ -67,6 +73,7 @@ export async function authenticateRequest(
   authAdapter: AuthAdapter,
   authorization: string | undefined,
   tenantHeader: string | undefined,
+  timeoutMs = authAdapterTimeoutFromEnvironment(),
 ): Promise<AuthContext> {
   if (tenantHeader === undefined || tenantHeader.trim().length === 0) {
     throw tenantScopeDenied();
@@ -74,12 +81,12 @@ export async function authenticateRequest(
 
   let adapterResult: unknown;
   try {
-    adapterResult = await authenticateWithTimeout(authAdapter, authorization, tenantHeader);
+    adapterResult = await authenticateWithTimeout(authAdapter, authorization, tenantHeader, timeoutMs);
   } catch (error) {
     throw safeAuthAdapterError(error);
   }
 
-  return snapshotAuthContext(adapterResult, tenantHeader);
+  return snapshotAuthContext(adapterResult, tenantHeader, authAdapterProvenance(authAdapter));
 }
 
 export function buildRuntimeAuthAdapter(): AuthAdapter {
@@ -123,14 +130,18 @@ async function authenticateWithTimeout(
   authAdapter: AuthAdapter,
   authorization: string | undefined,
   tenantHeader: string,
+  timeoutMs: number,
 ): Promise<unknown> {
-  const timeoutMs = authAdapterTimeoutFromEnvironment();
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
-      Promise.resolve(authAdapter.authenticate(authorization, tenantHeader)),
+      Promise.resolve(authAdapter.authenticate(authorization, tenantHeader, controller.signal)),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new AuthAdapterTimeoutError()), timeoutMs);
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new AuthAdapterTimeoutError());
+        }, timeoutMs);
         timer.unref();
       }),
     ]);
@@ -139,7 +150,7 @@ async function authenticateWithTimeout(
   }
 }
 
-function authAdapterTimeoutFromEnvironment(): number {
+export function authAdapterTimeoutFromEnvironment(): number {
   const configured = process.env.RELAY_AUTH_TIMEOUT_MS;
   if (configured === undefined || configured.length === 0) return DEFAULT_AUTH_ADAPTER_TIMEOUT_MS;
   const timeoutMs = Number(configured);
@@ -153,20 +164,22 @@ function authAdapterTimeoutFromEnvironment(): number {
   return timeoutMs;
 }
 
-function snapshotAuthContext(value: unknown, tenantHeader: string): AuthContext {
+function snapshotAuthContext(
+  value: unknown,
+  tenantHeader: string,
+  authAdapter: AuthContext["authAdapter"],
+): AuthContext {
   if (typeof value !== "object" || value === null) {
     throw invalidAuthAdapterResponse();
   }
-  const context = value as Partial<AuthContext>;
+  const context = value as Partial<AuthIdentity>;
   let actorId: unknown;
   let tenantId: unknown;
   let scopesValue: unknown;
-  let authAdapter: unknown;
   try {
     actorId = context.actorId;
     tenantId = context.tenantId;
     scopesValue = context.scopes;
-    authAdapter = context.authAdapter;
   } catch {
     throw invalidAuthAdapterResponse();
   }
@@ -174,8 +187,7 @@ function snapshotAuthContext(value: unknown, tenantHeader: string): AuthContext 
   if (
     typeof actorId !== "string" || actorId.length === 0 ||
     typeof tenantId !== "string" || tenantId.length === 0 ||
-    !Array.isArray(scopesValue) ||
-    (authAdapter !== "development" && authAdapter !== "test" && authAdapter !== "production")
+    !Array.isArray(scopesValue)
   ) {
     throw invalidAuthAdapterResponse();
   }
@@ -192,6 +204,10 @@ function snapshotAuthContext(value: unknown, tenantHeader: string): AuthContext 
 
   if (tenantHeader !== tenantId) throw tenantScopeDenied();
   return { actorId, tenantId, scopes: Object.freeze(scopes), authAdapter };
+}
+
+function authAdapterProvenance(authAdapter: AuthAdapter): AuthContext["authAdapter"] {
+  return authAdapter instanceof DevelopmentAuthAdapter ? authAdapter.provenance : "production";
 }
 
 function safeAuthAdapterError(error: unknown): RelayError {

@@ -56,8 +56,8 @@ work before route resolution or provider I/O. Invalid credentials retain their s
 authentication or tenant-scope error. An adapter dependency failure or malformed identity
 returns `503 DEPENDENCY_UNAVAILABLE` with a secret-safe reason code, and no provider is called.
 
-`RELAY_AUTH_TIMEOUT_MS` bounds an adapter call from 1 to 30,000 milliseconds;
+`RELAY_AUTH_TIMEOUT_MS` is parsed before the server starts and bounds an adapter call from 1 to 30,000 milliseconds;
 the default is 5,000 milliseconds. A timeout returns
 `DEPENDENCY_UNAVAILABLE` with `auth_adapter_timeout`. Adapter failures must use
-the public `authAdapterFailure` helper or its three documented codes. RELAY
+the public `authAdapterFailure` helper from `@tuzuminami/relay/server` or its three documented codes. The optional adapter `AbortSignal` is aborted at timeout so adapters can cancel their external I/O. RELAY
 discards every adapter-owned message, detail, status, and retry hint.

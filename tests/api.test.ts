@@ -3,7 +3,7 @@ import test from "node:test";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { buildDefaultService, createRelayHttpServer, runtimeProviderEgressPolicy } from "../apps/api/src/server.ts";
-import { authAdapterFailure, authenticateRequest, loadRuntimeAuthAdapter, validateRuntimeAuthMode, type AuthAdapter } from "../apps/api/src/auth.ts";
+import { authAdapterFailure, authenticateRequest, loadRuntimeAuthAdapter, validateRuntimeAuthMode, type AuthAdapter, type AuthIdentity } from "../apps/api/src/auth.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
 import { RelayService } from "../packages/core/src/relay-service.ts";
 import { FixedClock, InMemoryRelayStore, InMemoryUsageRepository, SequentialIdGenerator, StubProviderAdapter } from "../packages/adapters/src/in-memory.ts";
@@ -333,9 +333,9 @@ test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
 test("TEST-AUTH-003 awaits a production authentication adapter before route resolution", async () => {
   const { service, adapter } = buildApiFixture();
   const asyncAuthAdapter: AuthAdapter = {
-    async authenticate(): Promise<AuthContext> {
+    async authenticate(): Promise<AuthIdentity> {
       await Promise.resolve();
-      return { actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"], authAdapter: "production" };
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"] };
     },
   };
 
@@ -423,7 +423,6 @@ test("TEST-AUTH-007 snapshots adapter identities and times out unresolved authen
     actorId: "actor_1",
     tenantId: "tenant_a",
     scopes: ["relay:invoke"],
-    authAdapter: "production" as const,
   };
   const mutableAdapter: AuthAdapter = {
     async authenticate() {
@@ -436,6 +435,7 @@ test("TEST-AUTH-007 snapshots adapter identities and times out unresolved authen
 
   const timeoutFixture = buildApiFixture();
   const previousTimeout = process.env.RELAY_AUTH_TIMEOUT_MS;
+  let aborted = false;
   process.env.RELAY_AUTH_TIMEOUT_MS = "1";
   try {
     await withRelayServer(timeoutFixture.service, async (port) => {
@@ -447,7 +447,15 @@ test("TEST-AUTH-007 snapshots adapter identities and times out unresolved authen
       assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
       assert.deepEqual(payload.error.details, ["auth_adapter_timeout"]);
       assert.equal(timeoutFixture.adapter.calls, 0);
-    }, { authenticate: async () => new Promise<AuthContext>(() => {}) });
+    }, {
+      authenticate: async (_authorization, _tenantHeader, signal) => await new Promise<AuthIdentity>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new Error("adapter aborted"));
+        }, { once: true });
+      }),
+    });
+    assert.equal(aborted, true);
   } finally {
     if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
     else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
@@ -458,7 +466,7 @@ test("TEST-AUTH-005 rejects malformed asynchronous identities before route or pr
   const fixture = buildApiFixture();
   const malformedAdapter: AuthAdapter = {
     async authenticate() {
-      return { actorId: "actor_1", tenantId: "tenant_a", scopes: "relay:invoke", authAdapter: "production" } as unknown as AuthContext;
+      return { actorId: "actor_1", tenantId: "tenant_a", scopes: "relay:invoke" } as unknown as AuthIdentity;
     },
   };
 
@@ -474,6 +482,21 @@ test("TEST-AUTH-005 rejects malformed asynchronous identities before route or pr
     assert.deepEqual(payload.error.details, ["auth_adapter_invalid_response"]);
     assert.equal(fixture.adapter.calls, 0);
   }, malformedAdapter);
+});
+
+test("TEST-AUTH-008 rejects invalid timeout configuration before serving requests", () => {
+  const previousTimeout = process.env.RELAY_AUTH_TIMEOUT_MS;
+  process.env.RELAY_AUTH_TIMEOUT_MS = "invalid";
+  try {
+    const { service } = buildApiFixture();
+    assert.throws(
+      () => createRelayHttpServer(service, { authenticate: () => ({ actorId: "actor_1", tenantId: "tenant_a", scopes: ["relay:invoke"] }) }),
+      (error) => error instanceof RelayError && error.code === "CONFIGURATION_INVALID",
+    );
+  } finally {
+    if (previousTimeout === undefined) delete process.env.RELAY_AUTH_TIMEOUT_MS;
+    else process.env.RELAY_AUTH_TIMEOUT_MS = previousTimeout;
+  }
 });
 
 test("TEST-API-002 HTTP route dry-run redacts provider secret reference and avoids provider I/O", async () => {
