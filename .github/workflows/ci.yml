@@ -36,10 +36,14 @@ jobs:
       - run: pnpm run build
       - run: pnpm run db:migrate
         env:
-          RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+          RELAY_MIGRATION_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
       - run: pnpm run db:seed
         env:
           RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+      - run: createdb -h 127.0.0.1 -p 54329 -U relay relay_test
+        env:
+          PGPASSWORD: relay_dev_password
       - run: pnpm test
         env:
           RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+          RELAY_TEST_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay_test

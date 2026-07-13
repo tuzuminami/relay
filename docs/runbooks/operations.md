@@ -5,6 +5,7 @@
 ```bash
 docker compose up -d postgres
 export RELAY_DATABASE_URL=postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+export RELAY_MIGRATION_DATABASE_URL="$RELAY_DATABASE_URL"
 pnpm run db:migrate
 pnpm run db:seed
 pnpm run start:api
@@ -14,6 +15,7 @@ pnpm run start:api
 
 ```bash
 pnpm run check:private-boundary
+pnpm run check:version
 pnpm run build
 pnpm test
 ```
@@ -29,6 +31,18 @@ pnpm test
 - Provider HTTP timeouts return a typed safe dependency failure.
 - When PostgreSQL is enabled, chat completion evidence is recorded through one
   transaction containing idempotency, usage, and audit writes.
+
+## Migrations
+
+`pnpm run db:migrate` discovers only the ordered `db/migrations/NNNN_name.sql`
+manifest. It takes a PostgreSQL advisory lock, records SHA-256 checksums in
+`relay_meta.schema_migrations`, and applies each pending migration in its own
+transaction. Re-running is a no-op; a missing or changed applied migration
+fails closed before schema changes proceed.
+
+Production uses a dedicated `RELAY_MIGRATION_DATABASE_URL` and migration role.
+Do not grant the runtime role access to the `relay_meta` schema or its migration
+ledger. The runner refuses to use `RELAY_DATABASE_URL` as a production fallback.
 
 ## Rollback
 
