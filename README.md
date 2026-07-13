@@ -96,6 +96,31 @@ export RELAY_DATABASE_URL=postgres://relay:relay_dev_password@127.0.0.1:54329/re
 pnpm run start:api
 ```
 
+## Package Consumers
+
+The published package exposes only three supported entrypoints. It ships
+compiled JavaScript and declarations; source paths, adapters, and development
+scripts are deliberately not a consumer contract.
+
+```ts
+import { RelayClient } from "@tuzuminami/relay";
+import { createProductionRelayHttpServer } from "@tuzuminami/relay/server";
+import { listRelayMigrations, resolveRelayMigrationPath } from "@tuzuminami/relay/migrations";
+
+const client = new RelayClient({
+  baseUrl: "https://relay.example.com",
+  token: "issued-access-token",
+  tenantId: "tenant_example",
+});
+
+const server = await createProductionRelayHttpServer();
+const firstMigration = resolveRelayMigrationPath(listRelayMigrations()[0]);
+```
+
+`createProductionRelayHttpServer()` rejects development or incomplete runtime
+configuration before creating a server. Use the migration helper with your
+database runner; the migration SQL is part of the package artifact.
+
 Development auth uses an explicit local-only bearer token format:
 
 ```text

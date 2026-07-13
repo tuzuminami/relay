@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "noEmit": false,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["apps/api/src/auth.ts", "apps/api/src/server.ts", "packages/**/*.ts", "migrations/**/*.ts"]
+}

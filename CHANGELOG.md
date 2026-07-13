@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Published compiled JavaScript and declaration artifacts with supported SDK,
+  server, and migration entrypoints.
+- Added a clean-consumer tarball test and removed development source/scripts
+  from the npm package contents.
+
 ## 1.0.0 - 2026-07-13
 
 - Hardened OpenAI-compatible provider egress with production HTTPS/origin

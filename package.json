@@ -5,26 +5,42 @@
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.30.2",
+  "main": "./dist/packages/sdk-ts/src/index.js",
+  "types": "./dist/packages/sdk-ts/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/packages/sdk-ts/src/index.d.ts",
+      "import": "./dist/packages/sdk-ts/src/index.js"
+    },
+    "./server": {
+      "types": "./dist/packages/server/index.d.ts",
+      "import": "./dist/packages/server/index.js"
+    },
+    "./migrations": {
+      "types": "./dist/migrations/index.d.ts",
+      "import": "./dist/migrations/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
-    "apps",
-    "packages",
-    "db",
-    "scripts",
-    "docs/adr",
-    "docs/runbooks",
+    "dist",
+    "db/migrations",
+    "docs/brand/banner.svg",
     "README.md",
     "LICENSE",
     "SECURITY.md",
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "pnpm run typecheck && node scripts/clean-dist.mjs && pnpm exec tsc -p tsconfig.build.json && node scripts/rewrite-declaration-import-extensions.mjs",
     "check:private-boundary": "node scripts/check-private-boundary.mjs",
     "db:migrate": "node scripts/apply-sql.mjs db/migrations/0001_initial.sql",
     "db:seed": "node scripts/apply-sql.mjs db/seeds/development.sql",
+    "prepack": "pnpm run build",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
-    "verify": "pnpm run check:private-boundary && pnpm run build && pnpm test && pnpm pack --dry-run"
+    "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm run check:private-boundary && pnpm test && pnpm pack --dry-run"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
