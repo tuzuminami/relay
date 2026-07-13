@@ -38,12 +38,16 @@ test("TEST-PACKAGE-001 package dry-run excludes private material", () => {
   }
 
   for (const path of paths) {
-    assert.equal(/^(apps|packages|scripts|tests|db\/seeds)\//.test(path), false, `${path} must not be shipped as source or development material`);
+    assert.equal(/^(apps|scripts|tests|db\/seeds)\//.test(path), false, `${path} must not be shipped as source or development material`);
+    assert.equal(path.startsWith("packages/") && !path.startsWith("packages/contracts/"), false, `${path} must not be shipped as source or development material`);
   }
 
   assert.ok(paths.includes("dist/packages/sdk-ts/src/index.js"));
   assert.ok(paths.includes("dist/packages/server/index.js"));
   assert.ok(paths.includes("dist/migrations/index.js"));
   assert.ok(paths.includes("db/migrations/0001_initial.sql"));
+  assert.ok(paths.includes("packages/contracts/openapi.yaml"));
+  assert.ok(paths.includes("packages/contracts/schemas/chat-completion-request.schema.json"));
+  assert.ok(paths.includes("packages/contracts/schemas/provider-validation-request.schema.json"));
   assert.equal(paths.includes("dist/apps/api/src/main.js"), false, "unsupported CLI entrypoint must not be shipped");
 });
