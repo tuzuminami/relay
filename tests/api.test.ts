@@ -32,9 +32,9 @@ const apiRoute: ModelRoute = {
   enabled: true,
 };
 
-function buildApiFixture(options: {
-  readonly veilDecisionReplay?: VeilDecisionReplayStore;
+function buildApiFixture(overrides: {
   readonly veilDecisionVerifier?: VeilDecisionVerifier;
+  readonly veilDecisionReplay?: VeilDecisionReplayStore;
 } = {}) {
   const store = new InMemoryRelayStore([apiRoute], [apiProvider]);
   const adapter = new StubProviderAdapter();
@@ -47,8 +47,8 @@ function buildApiFixture(options: {
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
-    veilDecisionVerifier: options.veilDecisionVerifier ?? { verify: async (input) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") }) },
-    veilDecisionReplay: options.veilDecisionReplay ?? { claim: async () => true },
+    veilDecisionVerifier: overrides.veilDecisionVerifier ?? { verify: async (input) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") }) },
+    veilDecisionReplay: overrides.veilDecisionReplay ?? { claim: async () => true },
   });
   return { adapter, service, store };
 }
@@ -633,39 +633,32 @@ test("TEST-API-005 HTTP chat requires VEIL enforcement before provider I/O", asy
   assert.equal(adapter.calls, 0);
 });
 
-test("TEST-API-006 HTTP chat exposes stable errors for invalid and replayed VEIL decisions", async () => {
-  const cases: readonly {
-    readonly code: "VEIL_DECISION_INVALID" | "VEIL_DECISION_REPLAYED";
-    readonly fixture: ReturnType<typeof buildApiFixture>;
-  }[] = [
-    {
-      code: "VEIL_DECISION_INVALID",
-      fixture: buildApiFixture({
-        veilDecisionVerifier: {
-          async verify() {
-            throw new RelayError("VEIL_DECISION_INVALID", "Internal verifier detail.", 403, ["untrusted_detail"]);
-          },
-        },
-      }),
+test("TEST-API-006 HTTP chat returns complete envelopes for invalid and replayed VEIL decisions", async () => {
+  const invalid = buildApiFixture({
+    veilDecisionVerifier: {
+      verify: async () => {
+        throw new RelayError("VEIL_DECISION_INVALID", "VEIL decision cannot authorize this provider request.", 403);
+      },
     },
-    {
-      code: "VEIL_DECISION_REPLAYED",
-      fixture: buildApiFixture({ veilDecisionReplay: { claim: async () => false } }),
-    },
-  ];
+  });
+  const replayed = buildApiFixture({ veilDecisionReplay: { claim: async () => false } });
 
-  for (const { code, fixture } of cases) {
+  for (const [name, fixture, expectedCode] of [
+    ["invalid", invalid, "VEIL_DECISION_INVALID"],
+    ["replayed", replayed, "VEIL_DECISION_REPLAYED"],
+  ] as const) {
     await withRelayServer(fixture.service, async (port) => {
       const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
         method: "POST",
-        headers: { ...authHeaders(), "content-type": "application/json", "idempotency-key": `idem_${code}` },
-        body: chatBody("must not reach provider"),
+        headers: { ...authHeaders(), "content-type": "application/json", "idempotency-key": `idem_${name}`, "x-correlation-id": `corr_${name}` },
+        body: chatBody("never sent"),
       });
-      const payload = await response.json() as { error: { code: string; correlationId: string } };
+      const payload = await response.json() as { error: { code: string; message: string; details: string[]; correlationId: string } };
       assert.equal(response.status, 403);
-      assert.equal(payload.error.code, code);
-      assert.equal(typeof payload.error.correlationId, "string");
-      assert.notEqual(payload.error.correlationId.length, 0);
+      assert.equal(payload.error.code, expectedCode);
+      assert.equal(typeof payload.error.message, "string");
+      assert.deepEqual(payload.error.details, []);
+      assert.equal(payload.error.correlationId, `corr_${name}`);
     });
     assert.equal(fixture.adapter.calls, 0);
   }

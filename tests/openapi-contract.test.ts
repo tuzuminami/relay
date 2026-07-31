@@ -4,6 +4,20 @@ import test from "node:test";
 import { parseDocument } from "yaml";
 
 const openApi = readFileSync("packages/contracts/openapi.yaml", "utf8");
+const veilDecisionErrorCodes = [
+  "VEIL_DECISION_REQUIRED",
+  "VEIL_DECISION_INVALID",
+  "VEIL_DECISION_REPLAYED",
+] as const;
+
+function parsedOpenApi(): Record<string, unknown> {
+  const document = parseDocument(openApi, { uniqueKeys: true });
+  assert.deepEqual(document.errors, [], "OpenAPI YAML must parse without errors");
+  const parsed = document.toJS();
+  assert.equal(typeof parsed, "object");
+  assert.notEqual(parsed, null);
+  return parsed as Record<string, unknown>;
+}
 
 test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors", () => {
   assert.match(openApi, /version:\s+1\.0\.1/);
@@ -43,14 +57,20 @@ test("TEST-CONTRACT-003 OpenAPI documents stable authentication failures on ever
   }
 });
 
-test("TEST-CONTRACT-004 OpenAPI ErrorEnvelope structurally permits every runtime VEIL chat failure", () => {
-  const document = parseDocument(openApi, { uniqueKeys: true });
-  assert.deepEqual(document.errors, []);
-  const contract = document.toJS() as {
-    readonly components: { readonly schemas: { readonly ErrorEnvelope: { readonly properties: { readonly error: { readonly properties: { readonly code: { readonly enum: readonly string[] } } } } } } };
+test("TEST-CONTRACT-004 OpenAPI structurally permits all VEIL chat decision failures", () => {
+  const document = parsedOpenApi();
+  const components = document.components as { schemas: Record<string, unknown> };
+  const errorEnvelope = components.schemas.ErrorEnvelope as {
+    properties: { error: { properties: { code: { enum: readonly string[] } } } };
   };
-  const errorCodes = contract.components.schemas.ErrorEnvelope.properties.error.properties.code.enum;
-  assert.ok(errorCodes.includes("VEIL_DECISION_REQUIRED"));
-  assert.ok(errorCodes.includes("VEIL_DECISION_INVALID"));
-  assert.ok(errorCodes.includes("VEIL_DECISION_REPLAYED"));
+  const chat = (document.paths as Record<string, { post: { responses: Record<string, unknown> } }>)["/v1/chat/completions"];
+  assert.ok(chat, "/v1/chat/completions must be present");
+  const forbidden = chat.post.responses["403"] as {
+    content: { "application/json": { schema: { $ref: string } } };
+  };
+
+  assert.equal(forbidden.content["application/json"].schema.$ref, "#/components/schemas/ErrorEnvelope");
+  for (const code of veilDecisionErrorCodes) {
+    assert.ok(errorEnvelope.properties.error.properties.code.enum.includes(code), `${code} must be allowed by ErrorEnvelope`);
+  }
 });
