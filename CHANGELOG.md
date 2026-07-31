@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 - 2026-08-01
+
+- Align the public OpenAPI `ErrorEnvelope` with the three fail-closed VEIL
+  enforcement failures emitted by the runtime.
+- Parse the published OpenAPI contract structurally in CI so runtime VEIL error
+  codes cannot drift outside the generated-client enum.
+
 ## Unreleased
 
 - Ship OpenAPI and request schemas as explicit package exports, with packed-artifact release and consumer checks.

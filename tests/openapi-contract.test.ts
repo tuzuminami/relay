@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parseDocument } from "yaml";
 
 const openApi = readFileSync("packages/contracts/openapi.yaml", "utf8");
 
 test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors", () => {
-  assert.match(openApi, /version:\s+1\.0\.0/);
+  assert.match(openApi, /version:\s+1\.0\.1/);
   assert.match(openApi, /apiVersion:\s*\n\s+type:\s+string\s*\n\s+const:\s+v1/);
   assert.match(openApi, /\/v1\/routes\/resolve:/);
   assert.match(openApi, /Route resolution is a dry-run and never calls a provider\./);
@@ -40,4 +41,16 @@ test("TEST-CONTRACT-003 OpenAPI documents stable authentication failures on ever
     assert.match(section, /"503":/);
     assert.match(section, /#\/components\/schemas\/ErrorEnvelope/);
   }
+});
+
+test("TEST-CONTRACT-004 OpenAPI ErrorEnvelope structurally permits every runtime VEIL chat failure", () => {
+  const document = parseDocument(openApi, { uniqueKeys: true });
+  assert.deepEqual(document.errors, []);
+  const contract = document.toJS() as {
+    readonly components: { readonly schemas: { readonly ErrorEnvelope: { readonly properties: { readonly error: { readonly properties: { readonly code: { readonly enum: readonly string[] } } } } } } };
+  };
+  const errorCodes = contract.components.schemas.ErrorEnvelope.properties.error.properties.code.enum;
+  assert.ok(errorCodes.includes("VEIL_DECISION_REQUIRED"));
+  assert.ok(errorCodes.includes("VEIL_DECISION_INVALID"));
+  assert.ok(errorCodes.includes("VEIL_DECISION_REPLAYED"));
 });
