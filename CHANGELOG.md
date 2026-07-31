@@ -4,6 +4,10 @@
 
 - Added the three VEIL decision failures to the public OpenAPI error-code enum and HTTP envelope coverage.
 - Added immutable release evidence: package tarball, CycloneDX SBOM, SHA256SUMS, provenance, and SBOM attestations.
+- Align the public OpenAPI `ErrorEnvelope` with the three fail-closed VEIL
+  enforcement failures emitted by the runtime.
+- Parse the published OpenAPI contract structurally in CI so runtime VEIL error
+  codes cannot drift outside the generated-client enum.
 
 ## Unreleased
 

@@ -47,6 +47,7 @@
     "prepack": "pnpm run build",
     "audit:prod": "pnpm audit --prod --audit-level=high",
     "sbom": "env -i PATH=\"$PATH\" HOME=\"$HOME\" cdxgen -t js --required-only --fail-on-error -o artifacts/relay.cdx.json .",
+    "prepare:release-assets": "node scripts/prepare-release-assets.mjs",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
     "typecheck": "tsc --noEmit",
@@ -57,7 +58,7 @@
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
     "typescript": "^5.9.0",
-    "yaml": "^2.9.0"
+    "yaml": "2.9.0"
   },
   "dependencies": {
     "jose": "6.2.3",
