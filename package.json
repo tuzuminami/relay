@@ -39,14 +39,11 @@
     "build": "pnpm run typecheck && node scripts/clean-dist.mjs && pnpm exec tsc -p tsconfig.build.json && node scripts/rewrite-declaration-import-extensions.mjs",
     "check:private-boundary": "node scripts/check-private-boundary.mjs",
     "check:package-contracts": "node scripts/check-packed-contracts.mjs",
-    "check:release-evidence": "node scripts/check-release-evidence.mjs",
     "check:release": "pnpm run check:version && pnpm run check:package-contracts",
     "check:version": "node scripts/check-version-metadata.mjs",
     "db:migrate": "node scripts/apply-sql.mjs --migrate",
     "db:seed": "node scripts/apply-sql.mjs --seed db/seeds/development.sql",
     "prepack": "pnpm run build",
-    "audit:prod": "pnpm audit --prod --audit-level=high",
-    "sbom": "env -i PATH=\"$PATH\" HOME=\"$HOME\" cdxgen -t js --required-only --fail-on-error -o artifacts/relay.cdx.json .",
     "prepare:release-assets": "node scripts/prepare-release-assets.mjs",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
@@ -54,7 +51,6 @@
     "verify": "pnpm run check:private-boundary && pnpm run check:release && pnpm test && pnpm pack --dry-run"
   },
   "devDependencies": {
-    "@cyclonedx/cdxgen": "12.7.1",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
     "typescript": "^5.9.0",
