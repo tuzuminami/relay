@@ -1,6 +1,6 @@
 {
   "name": "@tuzuminami/relay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
   "license": "Apache-2.0",
@@ -44,6 +44,7 @@
     "db:migrate": "node scripts/apply-sql.mjs --migrate",
     "db:seed": "node scripts/apply-sql.mjs --seed db/seeds/development.sql",
     "prepack": "pnpm run build",
+    "prepare:release-assets": "node scripts/prepare-release-assets.mjs",
     "start:api": "node --experimental-strip-types apps/api/src/main.ts",
     "test": "pnpm run build && node --test --test-concurrency=1 --experimental-strip-types tests/*.test.ts",
     "typecheck": "tsc --noEmit",
@@ -52,7 +53,8 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "yaml": "2.9.0"
   },
   "dependencies": {
     "jose": "6.2.3",

@@ -1,0 +1,172 @@
+name: Release Evidence
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-evidence:
+    runs-on: ubuntu-latest
+    outputs:
+      event-commit: ${{ steps.source.outputs.commit }}
+    concurrency:
+      group: relay-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELAY_MIGRATION_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+      RELAY_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay
+      RELAY_TEST_DATABASE_URL: postgres://relay:relay_dev_password@127.0.0.1:54329/relay_test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: relay
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay_dev_password
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.30.2
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Verify immutable release source and main ancestry
+        id: source
+        run: |
+          git fetch origin main --depth=1
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          remote_tag_commit="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk '
+            $2 ~ /\^\{\}$/ { peeled = $1 }
+            $2 !~ /\^\{\}$/ { direct = $1 }
+            END { print peeled != "" ? peeled : direct }
+          ')"
+          test -n "$remote_tag_commit"
+          test "$remote_tag_commit" = "$event_commit"
+          git merge-base --is-ancestor "$event_commit" origin/main
+          package_version="$(node -p "require('./package.json').version")"
+          test "v${package_version}" = "$RELEASE_TAG"
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run repository, integration, and dependency gates
+        run: |
+          pnpm run check:private-boundary
+          pnpm run build
+          pnpm run db:migrate
+          pnpm run db:seed
+          createdb -h 127.0.0.1 -p 54329 -U relay relay_test
+          pnpm test
+          pnpm run check:release
+          pnpm audit --prod --audit-level=high
+        env:
+          PGPASSWORD: relay_dev_password
+
+      - name: Prepare release assets
+        run: pnpm run prepare:release-assets -- --output-dir artifacts
+
+      - name: Transfer release evidence to the trusted publication job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-release-assets-${{ github.ref_name }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  attest-and-publish:
+    needs: build-evidence
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      EVENT_COMMIT: ${{ needs.build-evidence.outputs.event-commit }}
+    steps:
+      - name: Retrieve verified release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: relay-release-assets-${{ github.ref_name }}
+          path: artifacts
+
+      - name: Verify tag was not moved before attestation or publication
+        run: |
+          remote_tag_commit="$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk '
+            $2 ~ /\^\{\}$/ { peeled = $1 }
+            $2 !~ /\^\{\}$/ { direct = $1 }
+            END { print peeled != "" ? peeled : direct }
+          ')"
+          test -n "$remote_tag_commit"
+          test "$remote_tag_commit" = "$EVENT_COMMIT"
+
+      - name: Attest package build provenance
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4.1.0
+        with:
+          subject-path: artifacts/*.tgz
+
+      - name: Attest package SBOM
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4.1.0
+        with:
+          subject-path: artifacts/*.tgz
+          sbom-path: artifacts/sbom.cdx.json
+
+      - name: Publish release assets without replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          expected_assets="$(find artifacts -maxdepth 1 -type f -exec basename {} \; | sort)"
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            release_state="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,assets)"
+            draft="$(printf '%s' "$release_state" | jq -r '.isDraft')"
+            existing_assets="$(printf '%s' "$release_state" | jq -r '.assets[].name' | sort)"
+            if [[ "$draft" != "true" ]]; then
+              echo "Release ${RELEASE_TAG} is already published; refusing to replace evidence." >&2
+              exit 1
+            fi
+            if [[ -z "$existing_assets" ]]; then
+              gh release upload "${RELEASE_TAG}" artifacts/* --repo "${GITHUB_REPOSITORY}"
+            elif [[ "$existing_assets" == "$expected_assets" ]]; then
+              mkdir existing-assets
+              while IFS= read -r asset; do
+                gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "$asset" --dir existing-assets
+                cmp --silent "artifacts/$asset" "existing-assets/$asset" || {
+                  echo "Draft asset $asset does not match the newly verified evidence." >&2
+                  exit 1
+                }
+              done <<< "$expected_assets"
+            else
+              echo "Release ${RELEASE_TAG} has unexpected draft assets; refusing to mix evidence." >&2
+              exit 1
+            fi
+          elif [[ -z "$expected_assets" ]]; then
+            echo "No release evidence assets were produced." >&2
+            exit 1
+          else
+            gh release create "${RELEASE_TAG}" artifacts/* --repo "${GITHUB_REPOSITORY}" --verify-tag --draft --generate-notes
+          fi
+          gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false

@@ -25,7 +25,7 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
 
   writeFileSync(join(process.cwd(), "dist", "stale-package-artifact.js"), "throw new Error('stale artifact');\n");
   run("pnpm", ["pack", "--pack-destination", packageDirectory], process.cwd());
-  const packageFile = join(packageDirectory, "tuzuminami-relay-1.0.0.tgz");
+  const packageFile = join(packageDirectory, "tuzuminami-relay-1.0.1.tgz");
   assert.ok(existsSync(packageFile), "pack must create the expected artifact");
 
   writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "relay-package-consumer", private: true, type: "module" }));
@@ -50,7 +50,7 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
     'const openApi = readFileSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/openapi.yaml")), "utf8");',
     'const chatSchema = JSON.parse(readFileSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/schemas/chat-completion-request.schema.json")), "utf8"));',
     'const providerSchema = JSON.parse(readFileSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/schemas/provider-validation-request.schema.json")), "utf8"));',
-    'if (!openApi.includes("version: 1.0.0") || chatSchema["x-relay-contract-version"] !== "1.0.0" || providerSchema["x-relay-contract-version"] !== "1.0.0") process.exit(1);',
+    'if (!openApi.includes("version: 1.0.1") || chatSchema["x-relay-contract-version"] !== "1.0.1" || providerSchema["x-relay-contract-version"] !== "1.0.1") process.exit(1);',
     'try { await import("@tuzuminami/relay/packages/sdk-ts/src/index"); process.exit(1); } catch (error) { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") process.exit(1); }'
   ].join("\n");
   run("node", ["--input-type=module", "--eval", program], consumerDirectory);
@@ -76,5 +76,5 @@ test("TEST-PACKAGE-002 packed artifact installs and exposes only supported entry
   assert.equal(existsSync(fileURLToPath(import.meta.resolve("@tuzuminami/relay/contracts/openapi.yaml"))), true);
   assert.equal(existsSync(join(consumerDirectory, "node_modules/@tuzuminami/relay/dist/apps/api/src/main.js")), false, "unsupported CLI entrypoint must not be installed");
   assert.equal(existsSync(join(consumerDirectory, "node_modules/@tuzuminami/relay/dist/stale-package-artifact.js")), false, "prepack must rebuild from a clean dist directory");
-  assert.equal(basename(packageFile), "tuzuminami-relay-1.0.0.tgz");
+  assert.equal(basename(packageFile), "tuzuminami-relay-1.0.1.tgz");
 });
