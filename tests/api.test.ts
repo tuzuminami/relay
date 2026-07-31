@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { buildDefaultService, createRelayHttpServer, runtimeProviderEgressPolicy } from "../apps/api/src/server.ts";
 import { authAdapterFailure, authenticateRequest, loadRuntimeAuthAdapter, validateRuntimeAuthMode, type AuthAdapter, type AuthIdentity } from "../apps/api/src/auth.ts";
 import { RelayError } from "../packages/core/src/errors.ts";
+import type { VeilDecisionReplayStore, VeilDecisionVerifier } from "../packages/core/src/ports.ts";
 import { RelayService } from "../packages/core/src/relay-service.ts";
 import { FixedClock, InMemoryRelayStore, InMemoryUsageRepository, SequentialIdGenerator, StubProviderAdapter } from "../packages/adapters/src/in-memory.ts";
 import type { AuthContext, ModelRoute, ProviderConfig } from "../packages/core/src/types.ts";
@@ -31,7 +32,10 @@ const apiRoute: ModelRoute = {
   enabled: true,
 };
 
-function buildApiFixture() {
+function buildApiFixture(overrides: {
+  readonly veilDecisionVerifier?: VeilDecisionVerifier;
+  readonly veilDecisionReplay?: VeilDecisionReplayStore;
+} = {}) {
   const store = new InMemoryRelayStore([apiRoute], [apiProvider]);
   const adapter = new StubProviderAdapter();
   const service = new RelayService({
@@ -43,8 +47,8 @@ function buildApiFixture() {
     completions: store,
     clock: new FixedClock(),
     ids: new SequentialIdGenerator(),
-    veilDecisionVerifier: { verify: async (input) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") }) },
-    veilDecisionReplay: { claim: async () => true },
+    veilDecisionVerifier: overrides.veilDecisionVerifier ?? { verify: async (input) => ({ decisionId: `decision-${input.inputHash}`, tenantId: input.tenantId, requestedAction: input.requestedAction, inputHash: input.inputHash, policyHash: "a".repeat(64), expiresAt: new Date("2030-01-01T00:00:00.000Z") }) },
+    veilDecisionReplay: overrides.veilDecisionReplay ?? { claim: async () => true },
   });
   return { adapter, service, store };
 }
@@ -627,4 +631,35 @@ test("TEST-API-005 HTTP chat requires VEIL enforcement before provider I/O", asy
     assert.equal(payload.error.code, "VEIL_DECISION_REQUIRED");
   });
   assert.equal(adapter.calls, 0);
+});
+
+test("TEST-API-006 HTTP chat returns complete envelopes for invalid and replayed VEIL decisions", async () => {
+  const invalid = buildApiFixture({
+    veilDecisionVerifier: {
+      verify: async () => {
+        throw new RelayError("VEIL_DECISION_INVALID", "VEIL decision cannot authorize this provider request.", 403);
+      },
+    },
+  });
+  const replayed = buildApiFixture({ veilDecisionReplay: { claim: async () => false } });
+
+  for (const [name, fixture, expectedCode] of [
+    ["invalid", invalid, "VEIL_DECISION_INVALID"],
+    ["replayed", replayed, "VEIL_DECISION_REPLAYED"],
+  ] as const) {
+    await withRelayServer(fixture.service, async (port) => {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { ...authHeaders(), "content-type": "application/json", "idempotency-key": `idem_${name}`, "x-correlation-id": `corr_${name}` },
+        body: chatBody("never sent"),
+      });
+      const payload = await response.json() as { error: { code: string; message: string; details: string[]; correlationId: string } };
+      assert.equal(response.status, 403);
+      assert.equal(payload.error.code, expectedCode);
+      assert.equal(typeof payload.error.message, "string");
+      assert.deepEqual(payload.error.details, []);
+      assert.equal(payload.error.correlationId, `corr_${name}`);
+    });
+    assert.equal(fixture.adapter.calls, 0);
+  }
 });

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 - 2026-08-01
+
+- Added the three VEIL decision failures to the public OpenAPI error-code enum and HTTP envelope coverage.
+- Added immutable release evidence: package tarball, CycloneDX SBOM, SHA256SUMS, provenance, and SBOM attestations.
+
 ## Unreleased
 
 - Ship OpenAPI and request schemas as explicit package exports, with packed-artifact release and consumer checks.

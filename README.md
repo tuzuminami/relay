@@ -59,7 +59,7 @@ secret vault, or promise feature parity across providers.
 
 ## Status
 
-RELAY V1.0.0 is a narrow Policy Enforcement Point for VEIL-governed model
+RELAY V1.0.1 is a narrow Policy Enforcement Point for VEIL-governed model
 requests. It resolves an approved route before a provider call, rather than
 trying to compete as a general-purpose inference gateway.
 
@@ -77,7 +77,7 @@ trying to compete as a general-purpose inference gateway.
 ## Versioning
 
 RELAY's package, OpenAPI `info.version`, and request schema
-`x-relay-contract-version` share the release SemVer (`1.0.0` for this
+`x-relay-contract-version` share the release SemVer (`1.0.1` for this
 release). `pnpm run check:version` rejects drift across those public contract
 surfaces, the README, and the changelog.
 

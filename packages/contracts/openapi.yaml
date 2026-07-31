@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RELAY API
-  version: 1.0.0
+  version: 1.0.1
 components:
   securitySchemes:
     bearerAuth:
@@ -117,6 +117,9 @@ components:
                 - CONFIGURATION_INVALID
                 - DEPENDENCY_UNAVAILABLE
                 - POLICY_BLOCKED
+                - VEIL_DECISION_REQUIRED
+                - VEIL_DECISION_INVALID
+                - VEIL_DECISION_REPLAYED
             message:
               type: string
             details:
