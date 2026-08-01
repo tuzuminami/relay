@@ -6,10 +6,39 @@ import { allowedOriginsFromEnvironment, canonicalProviderOrigin, isProductionRun
 import { RelayService } from "../../../packages/core/src/relay-service.ts";
 import { parseChatCompletionRequest, parseProviderValidationRequest, parseRouteQuery } from "../../../packages/core/src/validation.ts";
 import { createRemoteVeilDecisionVerifier, defaultProviderConfig, defaultRoute, InMemoryRelayStore, InMemoryUsageRepository, InMemoryVeilDecisionReplayStore, OpenAiCompatibleHttpAdapter, PostgresRelayStore, SequentialIdGenerator, StaticSecretResolver, SystemClock } from "../../../packages/adapters/src/index.ts";
+import type { SecretResolver } from "../../../packages/core/src/ports.ts";
 import { authAdapterTimeoutFromEnvironment, authenticateRequest, buildRuntimeAuthAdapter, type AuthAdapter } from "./auth.ts";
+import { loadRuntimeSecretResolver } from "./secrets.ts";
 
 export function buildDefaultService(): RelayService {
-  const providerSecret = resolveProviderSecret();
+  if (isProductionRuntime()) {
+    // Preserve configuration validation for callers that accidentally reach the development builder.
+    runtimeProviderEgressPolicy();
+    runtimeVeilDecisionVerifier();
+  }
+  return buildRuntime({ secretResolver: developmentSecretResolver() }).service;
+}
+
+export async function buildRuntimeService(): Promise<RelayRuntime> {
+  const secretResolver = isProductionRuntime()
+    ? await loadRuntimeSecretResolver()
+    : developmentSecretResolver();
+  return buildRuntime({ secretResolver });
+}
+
+export async function buildProductionRuntime(): Promise<RelayRuntime> {
+  if (!isProductionRuntime()) {
+    throw new RelayError("CONFIGURATION_INVALID", "Production runtime configuration is required.", 503);
+  }
+  return buildRuntimeService();
+}
+
+export interface RelayRuntime {
+  readonly service: RelayService;
+  readonly readiness: () => Promise<void>;
+}
+
+function buildRuntime(options: { readonly secretResolver: SecretResolver }): RelayRuntime {
   const providerEgressPolicy = runtimeProviderEgressPolicy();
   const veilDecisionVerifier = runtimeVeilDecisionVerifier();
   const veilVerifierPort = veilDecisionVerifier === undefined ? {} : { veilDecisionVerifier };
@@ -22,20 +51,22 @@ export function buildDefaultService(): RelayService {
     });
     const store = new PostgresRelayStore(pool);
     const provider = defaultProviderConfig();
-    const secrets = new StaticSecretResolver(new Map([[provider.secretReference, { value: providerSecret, tenantId: provider.tenantId, allowedOrigin: canonicalProviderOrigin(provider.baseUrl) }]]));
-    return new RelayService({
-      routes: store,
-      provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets, egressPolicy: providerEgressPolicy }),
-      audit: store,
-      usage: store,
-      idempotency: store,
-      completions: store,
-      clock: new SystemClock(),
-      ids: new SequentialIdGenerator(),
-      providerEgressPolicy,
-      ...veilVerifierPort,
-      veilDecisionReplay: store,
-    });
+    return {
+      service: new RelayService({
+        routes: store,
+        provider: new OpenAiCompatibleHttpAdapter({ secretResolver: options.secretResolver, egressPolicy: providerEgressPolicy }),
+        audit: store,
+        usage: store,
+        idempotency: store,
+        completions: store,
+        clock: new SystemClock(),
+        ids: new SequentialIdGenerator(),
+        providerEgressPolicy,
+        ...veilVerifierPort,
+        veilDecisionReplay: store,
+      }),
+      readiness: () => store.checkReadiness(),
+    };
   }
   const provider = defaultProviderConfig();
   const providerBaseUrlRejections = providerBaseUrlRejectionReasons(provider.baseUrl, providerEgressPolicy);
@@ -43,20 +74,22 @@ export function buildDefaultService(): RelayService {
     throw new RelayError("CONFIGURATION_INVALID", "Configured provider base URL is not permitted.", 503, providerBaseUrlRejections);
   }
   const store = new InMemoryRelayStore([defaultRoute()], [provider]);
-  const secrets = new StaticSecretResolver(new Map([[provider.secretReference, { value: providerSecret, tenantId: provider.tenantId, allowedOrigin: canonicalProviderOrigin(provider.baseUrl) }]]));
-  return new RelayService({
-    routes: store,
-    provider: new OpenAiCompatibleHttpAdapter({ secretResolver: secrets, egressPolicy: providerEgressPolicy }),
-    audit: store,
-    usage: new InMemoryUsageRepository(store),
-    idempotency: store,
-    completions: store,
-    clock: new SystemClock(),
-    ids: new SequentialIdGenerator(),
-    providerEgressPolicy,
-    ...veilVerifierPort,
-    veilDecisionReplay: new InMemoryVeilDecisionReplayStore(),
-  });
+  return {
+    service: new RelayService({
+      routes: store,
+      provider: new OpenAiCompatibleHttpAdapter({ secretResolver: options.secretResolver, egressPolicy: providerEgressPolicy }),
+      audit: store,
+      usage: new InMemoryUsageRepository(store),
+      idempotency: store,
+      completions: store,
+      clock: new SystemClock(),
+      ids: new SequentialIdGenerator(),
+      providerEgressPolicy,
+      ...veilVerifierPort,
+      veilDecisionReplay: new InMemoryVeilDecisionReplayStore(),
+    }),
+    readiness: async () => {},
+  };
 }
 
 function runtimeVeilDecisionVerifier() {
@@ -98,11 +131,15 @@ export function runtimeProviderEgressPolicy(): ProviderEgressPolicy {
   return { production, allowedOrigins };
 }
 
-export function createRelayHttpServer(service: RelayService = buildDefaultService(), authAdapter: AuthAdapter = buildRuntimeAuthAdapter()) {
+export function createRelayHttpServer(
+  service: RelayService = buildDefaultService(),
+  authAdapter: AuthAdapter = buildRuntimeAuthAdapter(),
+  readiness: () => Promise<void> = async () => {}
+) {
   const authTimeoutMs = authAdapterTimeoutFromEnvironment();
   return createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, service, authAdapter, authTimeoutMs);
+      await handleRequest(req, res, service, authAdapter, authTimeoutMs, readiness);
     } catch (error) {
       writeError(res, error, req.headers["x-correlation-id"]);
     }
@@ -115,6 +152,7 @@ async function handleRequest(
   service: RelayService,
   authAdapter: AuthAdapter,
   authTimeoutMs: number,
+  readiness: () => Promise<void>,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (req.method === "GET" && url.pathname === "/health") {
@@ -122,6 +160,11 @@ async function handleRequest(
     return;
   }
   if (req.method === "GET" && url.pathname === "/ready") {
+    try {
+      await readiness();
+    } catch {
+      throw new RelayError("DEPENDENCY_UNAVAILABLE", "Runtime is not ready.", 503, [], true);
+    }
     writeJson(res, 200, { data: { status: "ready" }, meta: meta(req) });
     return;
   }
@@ -166,15 +209,14 @@ async function handleRequest(
   throw new RelayError("VALIDATION_FAILED", "Route not found.", 404);
 }
 
-function resolveProviderSecret(): string {
-  const secret = process.env.RELAY_PROVIDER_API_KEY;
-  if (secret !== undefined && secret.length > 0) {
-    return secret;
-  }
+function developmentSecretResolver(): SecretResolver {
   if (isProductionRuntime()) {
-    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_PROVIDER_API_KEY or a production secret resolver.", 503);
+    throw new RelayError("CONFIGURATION_INVALID", "Production requires RELAY_SECRET_RESOLVER_MODULE.", 503);
   }
-  return "dev-placeholder";
+  const secret = process.env.RELAY_PROVIDER_API_KEY;
+  const value = secret !== undefined && secret.length > 0 ? secret : "dev-placeholder";
+  const provider = defaultProviderConfig();
+  return new StaticSecretResolver(new Map([[provider.secretReference, { value, tenantId: provider.tenantId, allowedOrigin: canonicalProviderOrigin(provider.baseUrl) }]]));
 }
 
 function redactedUsage(record: Awaited<ReturnType<RelayService["listUsage"]>>[number]): Record<string, unknown> {

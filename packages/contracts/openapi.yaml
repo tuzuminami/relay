@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RELAY API
-  version: 1.0.1
+  version: 1.0.2
 components:
   securitySchemes:
     bearerAuth:
@@ -139,6 +139,12 @@ paths:
       responses:
         "200":
           description: Service readiness.
+        "503":
+          description: PostgreSQL readiness dependency failed safely before authentication or provider I/O.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /v1/routes/resolve:
     get:
       security:

@@ -70,6 +70,10 @@ export class PostgresRelayStore implements RouteCatalog, AuditLog, UsageReposito
     this.pool = pool;
   }
 
+  async checkReadiness(): Promise<void> {
+    await this.pool.query("SELECT 1");
+  }
+
   async listRoutesForTenant(tenantId: string): Promise<readonly ModelRoute[]> {
     const result = await this.pool.query<RouteRow>(
       `SELECT route_id, tenant_id, purpose, data_classifications, required_capabilities,
