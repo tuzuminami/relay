@@ -12,6 +12,7 @@ test("TEST-DB-INT-001 PostgreSQL seed exposes only tenant-scoped route", { skip:
   });
   try {
     const store = new PostgresRelayStore(pool);
+    await store.checkReadiness();
     const tenantRoutes = await store.listRoutesForTenant("tenant_demo");
     const foreignRoutes = await store.listRoutesForTenant("tenant_other");
 

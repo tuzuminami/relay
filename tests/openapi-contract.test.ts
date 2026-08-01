@@ -20,7 +20,7 @@ function parsedOpenApi(): Record<string, unknown> {
 }
 
 test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors", () => {
-  assert.match(openApi, /version:\s+1\.0\.1/);
+  assert.match(openApi, /version:\s+1\.0\.2/);
   assert.match(openApi, /apiVersion:\s*\n\s+type:\s+string\s*\n\s+const:\s+v1/);
   assert.match(openApi, /\/v1\/routes\/resolve:/);
   assert.match(openApi, /Route resolution is a dry-run and never calls a provider\./);
@@ -31,6 +31,9 @@ test("TEST-CONTRACT-001 OpenAPI documents route dry-run and idempotency errors",
   assert.match(openApi, /VEIL_DECISION_REQUIRED/);
   assert.match(openApi, /VEIL_DECISION_INVALID/);
   assert.match(openApi, /VEIL_DECISION_REPLAYED/);
+  const readinessSection = openApi.slice(openApi.indexOf("  /ready:"), openApi.indexOf("  /v1/routes/resolve:"));
+  assert.match(readinessSection, /"503":/);
+  assert.match(readinessSection, /#\/components\/schemas\/ErrorEnvelope/);
 });
 
 test("TEST-CONTRACT-002 OpenAPI keeps secret references out of route resolution response", () => {

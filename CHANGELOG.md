@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.2 - 2026-08-01
+
+- Require a startup-validated production secret-resolver module and pass each
+  tenant ID, secret reference, and canonical provider origin to the resolver.
+- Keep static `RELAY_PROVIDER_API_KEY` resolution limited to development and
+  test fixtures; normalize resolver failures to a secret-safe 503 response.
+- Make `/ready` check the configured PostgreSQL dependency before reporting
+  ready, without authentication, VEIL consumption, or provider I/O.
+- Update the release-evidence artifact actions to current Node 24-compatible
+  versions for future immutable releases.
+
 ## 1.0.1 - 2026-08-01
 
 - Added the three VEIL decision failures to the public OpenAPI error-code enum and HTTP envelope coverage.

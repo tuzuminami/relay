@@ -59,7 +59,7 @@ secret vault, or promise feature parity across providers.
 
 ## Status
 
-RELAY V1.0.1 is a narrow Policy Enforcement Point for VEIL-governed model
+RELAY V1.0.2 is a narrow Policy Enforcement Point for VEIL-governed model
 requests. It resolves an approved route before a provider call, rather than
 trying to compete as a general-purpose inference gateway.
 
@@ -67,7 +67,8 @@ trying to compete as a general-purpose inference gateway.
 - Chat completion: `POST /v1/chat/completions`
 - Production auth-module boundary with verified tenant-scope enforcement
 - Deterministic route checks before any provider call
-- Secret references resolved only at the adapter boundary
+- Production resolver-module boundary for tenant-bound secret references
+- Dependency-aware readiness checks for PostgreSQL-backed deployments
 - Append-only audit and usage records
 - Idempotency for chat completion writes
 - VEIL EdDSA decision enforcement before every provider call
@@ -77,7 +78,7 @@ trying to compete as a general-purpose inference gateway.
 ## Versioning
 
 RELAY's package, OpenAPI `info.version`, and request schema
-`x-relay-contract-version` share the release SemVer (`1.0.1` for this
+`x-relay-contract-version` share the release SemVer (`1.0.2` for this
 release). `pnpm run check:version` rejects drift across those public contract
 surfaces, the README, and the changelog.
 
@@ -201,6 +202,16 @@ development bearer tokens are rejected in production. Provider credentials are
 configured as secret references and are not included in public
 configuration exports, audit events, usage records, or test fixtures.
 
+Production also requires `RELAY_SECRET_RESOLVER_MODULE`, a local module that
+exports `secretResolver.resolveSecret({ tenantId, reference, allowedOrigin })`.
+RELAY loads and validates this module before the runtime becomes available. The
+resolver must validate all three binding fields against its own secret mapping,
+return the secret only to the provider adapter, and treat an unknown binding as
+unavailable. Resolver failures are exposed only as a fixed safe `503`; resolver
+diagnostics and values are never copied into HTTP responses, audit events, or
+usage records. `RELAY_PROVIDER_API_KEY` is supported only for development and
+test fixtures, never for production.
+
 The adapter may return a promise and should observe the optional `AbortSignal` to
 stop external work on timeout. It may reject with
 `authAdapterFailure("AUTHENTICATION_REQUIRED" | "TENANT_SCOPE_DENIED" |
@@ -263,7 +274,9 @@ new decision verifies.
 
 When `RELAY_DATABASE_URL` is set, the API uses PostgreSQL-backed route, usage,
 audit, and idempotency adapters. Without it, the API uses in-memory development
-fixtures only.
+fixtures only. `GET /ready` executes a PostgreSQL `SELECT 1` in that mode and
+returns a fixed safe `503` without authenticating, consuming a VEIL decision, or
+calling a provider when the dependency is unavailable.
 
 ## Repository Boundary
 

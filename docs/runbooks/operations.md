@@ -29,6 +29,9 @@ pnpm test
 - Reusing an idempotency key with a different request returns a typed conflict
   before provider I/O.
 - Provider HTTP timeouts return a typed safe dependency failure.
+- `GET /ready` returns a typed safe 503 when its PostgreSQL dependency cannot
+  answer `SELECT 1`; it does not authenticate, consume VEIL decisions, or call
+  a provider.
 - When PostgreSQL is enabled, chat completion evidence is recorded through one
   transaction containing idempotency, usage, and audit writes.
 
@@ -61,3 +64,19 @@ the default is 5,000 milliseconds. A timeout returns
 `DEPENDENCY_UNAVAILABLE` with `auth_adapter_timeout`. Adapter failures must use
 the public `authAdapterFailure` helper from `@tuzuminami/relay/server` or its three documented codes. The optional adapter `AbortSignal` is aborted at timeout so adapters can cancel their external I/O. RELAY
 discards every adapter-owned message, detail, status, and retry hint.
+
+## Secret Resolver Deployment and Rotation
+
+Production requires `RELAY_SECRET_RESOLVER_MODULE` to name a local module that
+exports `secretResolver.resolveSecret({ tenantId, reference, allowedOrigin })`.
+The resolver owns the connection to the approved secret system and must validate
+the complete tenant, reference, and canonical provider-origin binding before it
+returns a value. RELAY loads the module before accepting traffic; a missing,
+invalid, or unavailable resolver produces only a fixed safe 503 and never
+persists resolver diagnostics or secret material.
+
+Rotate provider credentials by adding the new value to the secret system,
+updating the tenant-scoped reference mapping, and then revoking the old value
+after the deployment has converged. Do not place production values in
+`RELAY_PROVIDER_API_KEY`: that variable is development/test-only. Verify the
+rollout with `/ready` and one tenant-scoped dry-run before enabling model calls.

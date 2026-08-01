@@ -53,8 +53,13 @@ function buildApiFixture(overrides: {
   return { adapter, service, store };
 }
 
-async function withRelayServer<T>(service: RelayService, run: (port: number) => Promise<T>, authAdapter?: AuthAdapter): Promise<T> {
-  const server = createRelayHttpServer(service, authAdapter);
+async function withRelayServer<T>(
+  service: RelayService,
+  run: (port: number) => Promise<T>,
+  authAdapter?: AuthAdapter,
+  readiness?: () => Promise<void>,
+): Promise<T> {
+  const server = createRelayHttpServer(service, authAdapter, readiness);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -314,6 +319,35 @@ test("TEST-CONFIG-005 production requires VEIL verification and persistent repla
       else process.env[key] = value;
     }
   }
+});
+
+test("TEST-READY-001 readiness failure is dependency-safe before authentication or provider I/O", async () => {
+  const fixture = buildApiFixture();
+  let authenticationAttempts = 0;
+  const authAdapter: AuthAdapter = {
+    authenticate() {
+      authenticationAttempts += 1;
+      throw new Error("must not authenticate readiness probes");
+    },
+  };
+
+  await withRelayServer(
+    fixture.service,
+    async (port) => {
+      const response = await fetch(`http://127.0.0.1:${port}/ready`);
+      const payload = await response.json() as { error: { code: string; message: string; details: string[] } };
+      assert.equal(response.status, 503);
+      assert.equal(payload.error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(payload.error.message, "Runtime is not ready.");
+      assert.deepEqual(payload.error.details, []);
+      assert.equal(authenticationAttempts, 0);
+      assert.equal(fixture.adapter.calls, 0);
+    },
+    authAdapter,
+    async () => {
+      throw new Error("database operator diagnostic");
+    },
+  );
 });
 
 test("TEST-API-001 HTTP route resolve enforces auth tenant scope", async () => {
